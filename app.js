@@ -23,13 +23,14 @@ class GuitarTuner {
         this.MAX_OFFSET = 50; // Maximum offset in cents for visual display
         this.TUNED_CONFIRMATION_TIME = 800; // Time in ms to confirm tuning is stable
         this.UPDATE_INTERVAL = 100; // Update every 100ms
+        this.CLARITY_THRESHOLD = 0.7; // Minimum clarity for valid pitch detection
 
         // State variables
         this.currentStringIndex = 0;
         this.audioContext = null;
         this.microphone = null;
-        this.crepeModel = null;
-        this.audioProcessor = null;
+        this.analyser = null;
+        this.pitchDetector = null;
         this.updateIntervalId = null;
         this.isTuned = false;
         this.allStringsTuned = false;
@@ -38,9 +39,8 @@ class GuitarTuner {
         this.smoothingFactor = 0.15; // Smoothing factor (0-1), lower = smoother
         this.currentFrequency = null;
         this.currentNote = null;
-        this.audioBuffer = [];
-        this.bufferSize = 1024; // CREPE requires 1024 samples
-        this.sampleRate = 16000; // CREPE uses 16kHz sample rate
+        this.audioInput = null;
+        this.PitchDetector = null; // Will be set after library loads
 
         // DOM elements
         this.elements = {
@@ -67,18 +67,32 @@ class GuitarTuner {
 
     // Initialize app
     async init() {
-        // Check if TensorFlow.js and Crepe are available
-        if (typeof tf === 'undefined') {
-            console.error('TensorFlow.js is not loaded. Please check CDN connection.');
-            alert('Ошибка загрузки TensorFlow.js. Пожалуйста, обновите страницу.');
+        // Wait for Pitchy to be available (check multiple possible exports)
+        let waitCount = 0;
+        let PitchDetector = null;
+        
+        while (!PitchDetector && waitCount < 50) {
+            // Check different possible ways pitchy might be exported
+            PitchDetector = window.Pitchy?.PitchDetector || 
+                           window.PitchDetector || 
+                           window.pitchy?.PitchDetector ||
+                           (window.Pitchy && window.Pitchy.default?.PitchDetector);
+            
+            if (!PitchDetector) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                waitCount++;
+            }
+        }
+
+        if (!PitchDetector) {
+            console.error('Pitchy is not loaded. Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('pitch')));
+            alert('Ошибка загрузки библиотеки анализа звука (pitchy). Пожалуйста, обновите страницу или проверьте подключение к интернету.');
             return;
         }
 
-        if (typeof Crepe === 'undefined') {
-            console.error('Crepe.js is not loaded. Please check CDN connection.');
-            alert('Ошибка загрузки Crepe.js. Пожалуйста, обновите страницу.');
-            return;
-        }
+        // Store PitchDetector for use
+        this.PitchDetector = PitchDetector;
+        console.log('Pitchy loaded successfully');
 
         // Check if microphone access is already granted
         try {
@@ -103,38 +117,28 @@ class GuitarTuner {
         }
     }
 
-    // Setup audio processing with crepe.js
+    // Setup audio processing with pitchy
     async setupAudio(stream) {
         try {
-            // Initialize audio context (sample rate will be handled by resampling)
+            // Initialize audio context
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const actualSampleRate = this.audioContext.sampleRate;
-            console.log(`AudioContext sample rate: ${actualSampleRate} Hz`);
+            const sampleRate = this.audioContext.sampleRate;
+            console.log(`AudioContext sample rate: ${sampleRate} Hz`);
 
             // Create microphone source
             this.microphone = this.audioContext.createMediaStreamSource(stream);
 
-            // Initialize CREPE model
-            console.log('Initializing CREPE model...');
-            try {
-                // Try to initialize CREPE model
-                // The model URL might need to be adjusted based on actual crepe.js implementation
-                this.crepeModel = new Crepe();
-                await this.crepeModel.init();
-                console.log('CREPE model initialized successfully');
-            } catch (crepeError) {
-                console.error('CREPE initialization error:', crepeError);
-                // Try alternative initialization
-                this.crepeModel = new Crepe('model/');
-                await this.crepeModel.init();
-                console.log('CREPE model initialized successfully (alternative path)');
-            }
+            // Create analyser node
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 8192; // Larger FFT for better frequency resolution
+            this.analyser.smoothingTimeConstant = 0.3;
+            this.microphone.connect(this.analyser);
 
-            // Store actual sample rate for resampling
-            this.actualSampleRate = actualSampleRate;
-
-            // Setup audio processing
-            this.setupAudioProcessor();
+            // Initialize Pitchy detector
+            console.log('Initializing Pitchy detector...');
+            this.pitchDetector = this.PitchDetector.forFloat32Array(sampleRate);
+            this.audioInput = new Float32Array(this.pitchDetector.inputLength);
+            console.log(`Pitchy detector initialized successfully. Input length: ${this.pitchDetector.inputLength}`);
 
             // Start tuning process
             this.startTuning();
@@ -144,93 +148,39 @@ class GuitarTuner {
         }
     }
 
-    // Setup audio processor for CREPE
-    setupAudioProcessor() {
-        // Create script processor to get audio samples
-        // Using 4096 buffer size for better performance
-        const processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-        
-        // Buffer to accumulate samples for CREPE (needs 1024 samples at 16kHz)
-        let sampleBuffer = [];
-        const crepeSampleRate = 16000;
-        const crepeBufferSize = 1024;
-        
-        processor.onaudioprocess = (event) => {
-            const inputData = event.inputBuffer.getChannelData(0);
-            const inputSampleRate = this.actualSampleRate;
-            
-            // Resample to 16kHz if needed
-            const resampled = this.resampleAudio(inputData, inputSampleRate, crepeSampleRate);
-            
-            // Add to buffer
-            for (let i = 0; i < resampled.length; i++) {
-                sampleBuffer.push(resampled[i]);
-            }
-            
-            // Process when we have enough samples (1024 at 16kHz)
-            while (sampleBuffer.length >= crepeBufferSize) {
-                const samples = sampleBuffer.slice(0, crepeBufferSize);
-                sampleBuffer = sampleBuffer.slice(crepeBufferSize);
-                
-                // Process with CREPE (async, but we don't wait)
-                this.processAudioWithCrepe(new Float32Array(samples));
-            }
-        };
+    // Get pitch using Pitchy (called every 100ms)
+    getPitch() {
+        if (!this.analyser || !this.pitchDetector) return;
 
-        this.microphone.connect(processor);
-        processor.connect(this.audioContext.destination);
-        this.audioProcessor = processor;
-    }
-
-    // Resample audio to target sample rate
-    resampleAudio(audioData, fromRate, toRate) {
-        if (fromRate === toRate) {
-            return audioData;
-        }
-        
-        const ratio = toRate / fromRate;
-        const outputLength = Math.round(audioData.length * ratio);
-        const output = new Float32Array(outputLength);
-        
-        for (let i = 0; i < outputLength; i++) {
-            const index = i / ratio;
-            const indexFloor = Math.floor(index);
-            const indexCeil = Math.min(indexFloor + 1, audioData.length - 1);
-            const fraction = index - indexFloor;
-            
-            // Linear interpolation
-            output[i] = audioData[indexFloor] * (1 - fraction) + audioData[indexCeil] * fraction;
-        }
-        
-        return output;
-    }
-
-    // Process audio with crepe.js
-    async processAudioWithCrepe(audioSamples) {
         try {
-            if (!this.crepeModel || audioSamples.length !== 1024) return;
+            // Get time domain data
+            const buffer = new Float32Array(this.analyser.fftSize);
+            this.analyser.getFloatTimeDomainData(buffer);
 
-            // Get pitch prediction from CREPE
-            // CREPE model.predict() returns frequency in Hz
-            const frequency = await this.crepeModel.predict(audioSamples);
+            // Copy required length to audioInput
+            const length = Math.min(buffer.length, this.audioInput.length);
+            for (let i = 0; i < length; i++) {
+                this.audioInput[i] = buffer[i];
+            }
+
+            // Detect pitch using Pitchy
+            const [pitch, clarity] = this.pitchDetector.findPitch(this.audioInput);
             
-            // Handle different return formats (number or object with freq property)
-            const freq = typeof frequency === 'object' && frequency.freq ? frequency.freq : frequency;
-            
-            if (freq && freq > 0 && freq >= 50 && freq <= 400) {
-                this.currentFrequency = freq;
-                this.currentNote = this.frequencyToNote(freq);
+            // Only use pitch if clarity is above threshold
+            if (pitch > 0 && clarity > this.CLARITY_THRESHOLD && pitch >= 50 && pitch <= 400) {
+                this.currentFrequency = pitch;
+                this.currentNote = this.frequencyToNote(pitch);
                 
                 // Log to console as requested
-                console.log(`Frequency: ${freq.toFixed(2)} Hz, Note: ${this.currentNote ? this.currentNote.name : 'N/A'}`);
-            } else if (freq === 0 || !freq) {
-                // No pitch detected
+                console.log(`Frequency: ${pitch.toFixed(2)} Hz, Note: ${this.currentNote ? this.currentNote.name : 'N/A'}, Clarity: ${(clarity * 100).toFixed(1)}%`);
+            } else {
                 this.currentFrequency = null;
                 this.currentNote = null;
             }
         } catch (error) {
-            console.error('Error processing audio with crepe:', error);
-            // Don't set to null on error to avoid flickering
+            console.error('Error getting pitch:', error);
+            this.currentFrequency = null;
+            this.currentNote = null;
         }
     }
 
@@ -238,8 +188,12 @@ class GuitarTuner {
     startTuning() {
         this.updateUI();
         
-        // Start update interval (every 100ms) to update UI with latest frequency
+        // Start pitch detection and UI update interval (every 100ms)
         this.updateIntervalId = setInterval(() => {
+            // Get pitch from Pitchy
+            this.getPitch();
+            
+            // Update UI with current frequency
             if (this.currentFrequency !== null) {
                 this.updateTuning(this.currentFrequency);
             } else {
@@ -457,12 +411,8 @@ class GuitarTuner {
         if (this.updateIntervalId) {
             clearInterval(this.updateIntervalId);
         }
-        if (this.audioProcessor) {
-            this.audioProcessor.disconnect();
-        }
-        if (this.crepeModel) {
-            // Cleanup CREPE model if needed
-            this.crepeModel = null;
+        if (this.analyser) {
+            this.analyser.disconnect();
         }
         if (this.microphone && this.microphone.mediaStream) {
             this.microphone.mediaStream.getTracks().forEach(track => track.stop());
