@@ -60,6 +60,21 @@ body {
     top: 50%;
     transform: translate(-50%, -50%);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Note text inside orange circle */
+.note-text {
+    color: #FFFFFF;
+    font-size: 32px;
+    font-weight: 700;
+    text-align: center;
+    user-select: none;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
 }
 
 /* Instruction text */
@@ -121,29 +136,6 @@ body {
     height: 2px;
     background-color: #F76F3F;
     margin: 0 auto 8px;
-    position: relative;
-}
-
-.string-bracket::before,
-.string-bracket::after {
-    content: '';
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border: 2px solid #F76F3F;
-    top: -5px;
-}
-
-.string-bracket::before {
-    left: 0;
-    border-right: none;
-    border-bottom: none;
-}
-
-.string-bracket::after {
-    right: 0;
-    border-left: none;
-    border-bottom: none;
 }
 
 /* Tuning type */

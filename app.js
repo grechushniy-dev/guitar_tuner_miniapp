@@ -22,18 +22,25 @@ class GuitarTuner {
         this.TUNING_TOLERANCE = 8; // ±8 cents tolerance
         this.MAX_OFFSET = 50; // Maximum offset in cents for visual display
         this.TUNED_CONFIRMATION_TIME = 800; // Time in ms to confirm tuning is stable
+        this.UPDATE_INTERVAL = 100; // Update every 100ms
 
         // State variables
         this.currentStringIndex = 0;
         this.audioContext = null;
-        this.analyser = null;
         this.microphone = null;
-        this.dataArray = null;
-        this.frequencyData = null;
-        this.animationFrameId = null;
+        this.crepeModel = null;
+        this.audioProcessor = null;
+        this.updateIntervalId = null;
         this.isTuned = false;
         this.allStringsTuned = false;
         this.tuningTimeout = null;
+        this.smoothedOffset = 0; // For smooth circle movement
+        this.smoothingFactor = 0.15; // Smoothing factor (0-1), lower = smoother
+        this.currentFrequency = null;
+        this.currentNote = null;
+        this.audioBuffer = [];
+        this.bufferSize = 1024; // CREPE requires 1024 samples
+        this.sampleRate = 16000; // CREPE uses 16kHz sample rate
 
         // DOM elements
         this.elements = {
@@ -41,8 +48,16 @@ class GuitarTuner {
             instructionText: document.getElementById('instructionText'),
             tunedMessage: document.getElementById('tunedMessage'),
             tunedSubmessage: document.getElementById('tunedSubmessage'),
-            orangeCircle: document.getElementById('orangeCircle')
+            orangeCircle: document.getElementById('orangeCircle'),
+            noteText: document.getElementById('noteText')
         };
+
+        // Musical note names
+        this.NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        // Reference frequency (A4 = 440 Hz)
+        this.A4_FREQUENCY = 440;
+        this.A4_NOTE_INDEX = 9; // A is at index 9 in NOTE_NAMES
+        this.A4_OCTAVE = 4;
 
         // Bind methods
         this.requestMicrophoneAccess = this.requestMicrophoneAccess.bind(this);
@@ -51,24 +66,36 @@ class GuitarTuner {
     }
 
     // Initialize app
-    init() {
+    async init() {
+        // Check if TensorFlow.js and Crepe are available
+        if (typeof tf === 'undefined') {
+            console.error('TensorFlow.js is not loaded. Please check CDN connection.');
+            alert('Ошибка загрузки TensorFlow.js. Пожалуйста, обновите страницу.');
+            return;
+        }
+
+        if (typeof Crepe === 'undefined') {
+            console.error('Crepe.js is not loaded. Please check CDN connection.');
+            alert('Ошибка загрузки Crepe.js. Пожалуйста, обновите страницу.');
+            return;
+        }
+
         // Check if microphone access is already granted
-        navigator.mediaDevices.getUserMedia({ audio: true })
-            .then(stream => {
-                this.setupAudio(stream);
-                this.elements.permissionOverlay.classList.add('hidden');
-            })
-            .catch(err => {
-                console.log('Microphone access not granted:', err);
-                // Show permission overlay
-            });
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            await this.setupAudio(stream);
+            this.elements.permissionOverlay.classList.add('hidden');
+        } catch (err) {
+            console.log('Microphone access not granted:', err);
+            // Show permission overlay
+        }
     }
 
     // Request microphone access
     async requestMicrophoneAccess() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.setupAudio(stream);
+            await this.setupAudio(stream);
             this.elements.permissionOverlay.classList.add('hidden');
         } catch (err) {
             console.error('Error accessing microphone:', err);
@@ -76,30 +103,196 @@ class GuitarTuner {
         }
     }
 
-    // Setup audio processing
-    setupAudio(stream) {
-        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        this.analyser = this.audioContext.createAnalyser();
-        this.microphone = this.audioContext.createMediaStreamSource(stream);
-        this.microphone.connect(this.analyser);
+    // Setup audio processing with crepe.js
+    async setupAudio(stream) {
+        try {
+            // Initialize audio context (sample rate will be handled by resampling)
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const actualSampleRate = this.audioContext.sampleRate;
+            console.log(`AudioContext sample rate: ${actualSampleRate} Hz`);
 
-        // Use larger FFT size for better frequency resolution (16384 is well supported)
-        this.analyser.fftSize = 16384;
-        this.analyser.smoothingTimeConstant = 0.1; // Very low smoothing for responsive detection
-        this.analyser.minDecibels = -90;
-        this.analyser.maxDecibels = -10;
+            // Create microphone source
+            this.microphone = this.audioContext.createMediaStreamSource(stream);
+
+            // Initialize CREPE model
+            console.log('Initializing CREPE model...');
+            try {
+                // Try to initialize CREPE model
+                // The model URL might need to be adjusted based on actual crepe.js implementation
+                this.crepeModel = new Crepe();
+                await this.crepeModel.init();
+                console.log('CREPE model initialized successfully');
+            } catch (crepeError) {
+                console.error('CREPE initialization error:', crepeError);
+                // Try alternative initialization
+                this.crepeModel = new Crepe('model/');
+                await this.crepeModel.init();
+                console.log('CREPE model initialized successfully (alternative path)');
+            }
+
+            // Store actual sample rate for resampling
+            this.actualSampleRate = actualSampleRate;
+
+            // Setup audio processing
+            this.setupAudioProcessor();
+
+            // Start tuning process
+            this.startTuning();
+        } catch (error) {
+            console.error('Error setting up audio:', error);
+            alert('Ошибка инициализации анализа звука: ' + error.message);
+        }
+    }
+
+    // Setup audio processor for CREPE
+    setupAudioProcessor() {
+        // Create script processor to get audio samples
+        // Using 4096 buffer size for better performance
+        const processor = this.audioContext.createScriptProcessor(4096, 1, 1);
         
-        const bufferLength = this.analyser.frequencyBinCount;
-        this.dataArray = new Float32Array(this.analyser.fftSize); // Time domain data (fftSize samples)
-        this.frequencyData = new Uint8Array(bufferLength); // Frequency domain data (frequencyBinCount bins)
+        // Buffer to accumulate samples for CREPE (needs 1024 samples at 16kHz)
+        let sampleBuffer = [];
+        const crepeSampleRate = 16000;
+        const crepeBufferSize = 1024;
+        
+        processor.onaudioprocess = (event) => {
+            const inputData = event.inputBuffer.getChannelData(0);
+            const inputSampleRate = this.actualSampleRate;
+            
+            // Resample to 16kHz if needed
+            const resampled = this.resampleAudio(inputData, inputSampleRate, crepeSampleRate);
+            
+            // Add to buffer
+            for (let i = 0; i < resampled.length; i++) {
+                sampleBuffer.push(resampled[i]);
+            }
+            
+            // Process when we have enough samples (1024 at 16kHz)
+            while (sampleBuffer.length >= crepeBufferSize) {
+                const samples = sampleBuffer.slice(0, crepeBufferSize);
+                sampleBuffer = sampleBuffer.slice(crepeBufferSize);
+                
+                // Process with CREPE (async, but we don't wait)
+                this.processAudioWithCrepe(new Float32Array(samples));
+            }
+        };
 
-        this.startTuning();
+        this.microphone.connect(processor);
+        processor.connect(this.audioContext.destination);
+        this.audioProcessor = processor;
+    }
+
+    // Resample audio to target sample rate
+    resampleAudio(audioData, fromRate, toRate) {
+        if (fromRate === toRate) {
+            return audioData;
+        }
+        
+        const ratio = toRate / fromRate;
+        const outputLength = Math.round(audioData.length * ratio);
+        const output = new Float32Array(outputLength);
+        
+        for (let i = 0; i < outputLength; i++) {
+            const index = i / ratio;
+            const indexFloor = Math.floor(index);
+            const indexCeil = Math.min(indexFloor + 1, audioData.length - 1);
+            const fraction = index - indexFloor;
+            
+            // Linear interpolation
+            output[i] = audioData[indexFloor] * (1 - fraction) + audioData[indexCeil] * fraction;
+        }
+        
+        return output;
+    }
+
+    // Process audio with crepe.js
+    async processAudioWithCrepe(audioSamples) {
+        try {
+            if (!this.crepeModel || audioSamples.length !== 1024) return;
+
+            // Get pitch prediction from CREPE
+            // CREPE model.predict() returns frequency in Hz
+            const frequency = await this.crepeModel.predict(audioSamples);
+            
+            // Handle different return formats (number or object with freq property)
+            const freq = typeof frequency === 'object' && frequency.freq ? frequency.freq : frequency;
+            
+            if (freq && freq > 0 && freq >= 50 && freq <= 400) {
+                this.currentFrequency = freq;
+                this.currentNote = this.frequencyToNote(freq);
+                
+                // Log to console as requested
+                console.log(`Frequency: ${freq.toFixed(2)} Hz, Note: ${this.currentNote ? this.currentNote.name : 'N/A'}`);
+            } else if (freq === 0 || !freq) {
+                // No pitch detected
+                this.currentFrequency = null;
+                this.currentNote = null;
+            }
+        } catch (error) {
+            console.error('Error processing audio with crepe:', error);
+            // Don't set to null on error to avoid flickering
+        }
     }
 
     // Start tuning process
     startTuning() {
         this.updateUI();
-        this.animate();
+        
+        // Start update interval (every 100ms) to update UI with latest frequency
+        this.updateIntervalId = setInterval(() => {
+            if (this.currentFrequency !== null) {
+                this.updateTuning(this.currentFrequency);
+            } else {
+                this.updateTuning(null);
+            }
+        }, this.UPDATE_INTERVAL);
+    }
+
+    // Update tuning based on detected frequency
+    updateTuning(frequency) {
+        if (!frequency || frequency <= 0) {
+            // No frequency detected
+            this.smoothedOffset = this.smoothedOffset + (0 - this.smoothedOffset) * this.smoothingFactor;
+            this.elements.orangeCircle.style.transition = 'none';
+            this.elements.orangeCircle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
+            this.updateNoteText(null);
+            
+            if (this.tuningTimeout) {
+                clearTimeout(this.tuningTimeout);
+                this.tuningTimeout = null;
+            }
+            this.isTuned = false;
+            return;
+        }
+
+        const currentString = this.STRING_FREQUENCIES[this.currentStringIndex];
+        const cents = this.frequencyToCents(frequency, currentString.frequency);
+        
+        // Update circle position
+        this.updateCirclePosition(cents);
+        
+        // Update note text
+        this.updateNoteText(frequency);
+        
+        // Check if tuned
+        if (!this.isTuned && this.checkIfTuned(cents)) {
+            this.isTuned = true;
+            if (this.tuningTimeout) {
+                clearTimeout(this.tuningTimeout);
+            }
+            this.tuningTimeout = setTimeout(() => {
+                if (this.isTuned && !this.allStringsTuned) {
+                    this.moveToNextString();
+                }
+                this.tuningTimeout = null;
+            }, this.TUNED_CONFIRMATION_TIME);
+        } else if (!this.checkIfTuned(cents)) {
+            if (this.tuningTimeout) {
+                clearTimeout(this.tuningTimeout);
+                this.tuningTimeout = null;
+            }
+            this.isTuned = false;
+        }
     }
 
     // Update UI for current string
@@ -110,6 +303,10 @@ class GuitarTuner {
             this.elements.instructionText.classList.add('hidden');
             this.elements.tunedMessage.classList.remove('hidden');
             this.elements.tunedSubmessage.classList.remove('hidden');
+            if (this.elements.noteText) {
+                this.elements.noteText.textContent = '';
+                this.elements.noteText.style.opacity = '0';
+            }
             return;
         }
 
@@ -118,8 +315,14 @@ class GuitarTuner {
         this.elements.tunedMessage.classList.add('hidden');
         this.elements.tunedSubmessage.classList.add('hidden');
 
+        // Reset smoothed offset and hide note text when switching strings
+        this.smoothedOffset = 0;
+        if (this.elements.noteText) {
+            this.elements.noteText.textContent = '';
+            this.elements.noteText.style.opacity = '0';
+        }
+
         // Update string indicators
-        // Tuned strings = orange (highlighted), current string = black (active), future strings = gray (default)
         this.STRING_FREQUENCIES.forEach((str, index) => {
             const element = document.querySelector(`[data-string="${index}"]`);
             if (index < this.currentStringIndex) {
@@ -145,151 +348,75 @@ class GuitarTuner {
         return 1200 * Math.log2(detectedFreq / targetFreq);
     }
 
-    // Detect pitch using hybrid approach: FFT for initial detection + autocorrelation for accuracy
-    detectPitch() {
-        if (!this.analyser || !this.frequencyData || !this.dataArray) return null;
-
-        const sampleRate = this.audioContext.sampleRate;
-        const fftSize = this.analyser.fftSize;
+    // Convert frequency to musical note
+    frequencyToNote(frequency) {
+        if (!frequency || frequency <= 0) return null;
         
-        // Method 1: Use FFT for quick frequency estimation
-        this.analyser.getByteFrequencyData(this.frequencyData);
+        // Calculate semitones from A4 (440 Hz)
+        const semitonesFromA4 = 12 * Math.log2(frequency / this.A4_FREQUENCY);
         
-        const bufferLength = this.frequencyData.length;
-        const freqResolution = sampleRate / fftSize;
+        // Round to nearest semitone
+        const roundedSemitones = Math.round(semitonesFromA4);
         
-        // Check signal strength in frequency domain
-        let totalEnergy = 0;
-        for (let i = 0; i < bufferLength; i++) {
-            totalEnergy += this.frequencyData[i];
-        }
-        const averageEnergy = totalEnergy / bufferLength;
+        // Calculate which note this corresponds to
+        const semitonesFromC0 = roundedSemitones + 57; // 57 = A4's position (9 + 4*12)
         
-        // Ignore very weak signals
-        if (averageEnergy < 3) {
-            return null;
+        // Calculate octave and note index
+        const octave = Math.floor(semitonesFromC0 / 12);
+        let noteIndex = semitonesFromC0 % 12;
+        
+        // Handle negative modulo
+        if (noteIndex < 0) {
+            noteIndex += 12;
         }
         
-        // Focus on guitar frequency range: 50-400 Hz
-        const minBin = Math.max(1, Math.floor(50 / freqResolution));
-        const maxBin = Math.min(Math.floor(400 / freqResolution), bufferLength - 2);
-        
-        // Find peaks in the frequency spectrum
-        let peaks = [];
-        for (let i = minBin; i <= maxBin; i++) {
-            const magnitude = this.frequencyData[i];
-            // Check if this is a local maximum
-            if (magnitude > this.frequencyData[i - 1] && 
-                magnitude > this.frequencyData[i + 1] && 
-                magnitude > 15) { // Minimum magnitude threshold
-                peaks.push({ bin: i, magnitude: magnitude });
-            }
-        }
-        
-        // Sort peaks by magnitude
-        peaks.sort((a, b) => b.magnitude - a.magnitude);
-        
-        if (peaks.length === 0) {
-            return null;
-        }
-        
-        // Use the strongest peak as candidate
-        const candidatePeak = peaks[0];
-        
-        // Parabolic interpolation for sub-bin accuracy
-        const bin = candidatePeak.bin;
-        const y1 = this.frequencyData[bin - 1];
-        const y2 = this.frequencyData[bin];
-        const y3 = this.frequencyData[bin + 1];
-        
-        let frequency = bin * freqResolution;
-        const denom = y1 - 2 * y2 + y3;
-        if (Math.abs(denom) > 0.001) {
-            const offset = (y1 - y3) / (2 * denom);
-            frequency = (bin + offset) * freqResolution;
-        }
-        
-        // Method 2: Use autocorrelation on time domain data for verification
-        // This helps filter out harmonics and gives more accurate fundamental frequency
-        this.analyser.getFloatTimeDomainData(this.dataArray);
-        const timeDataLength = this.dataArray.length;
-        
-        // Check signal strength in time domain
-        let signalStrength = 0;
-        for (let i = 0; i < timeDataLength; i++) {
-            signalStrength += Math.abs(this.dataArray[i]);
-        }
-        signalStrength /= timeDataLength;
-        
-        if (signalStrength < 0.005) {
-            return null;
-        }
-        
-        // Apply Hanning window
-        const windowed = new Float32Array(timeDataLength);
-        for (let i = 0; i < timeDataLength; i++) {
-            windowed[i] = this.dataArray[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (timeDataLength - 1)));
-        }
-        
-        // Autocorrelation around the FFT-detected frequency
-        const expectedPeriod = sampleRate / frequency;
-        const searchRange = Math.floor(expectedPeriod * 0.3); // Search ±30% around expected period
-        const minPeriod = Math.max(1, Math.floor(expectedPeriod - searchRange));
-        const maxPeriod = Math.min(Math.floor(expectedPeriod + searchRange), Math.floor(timeDataLength / 2));
-        
-        let bestOffset = -1;
-        let bestCorrelation = -1;
-        
-        for (let offset = minPeriod; offset <= maxPeriod; offset++) {
-            let correlation = 0;
-            let normalization = 0;
-            
-            for (let i = 0; i < timeDataLength - offset; i++) {
-                correlation += windowed[i] * windowed[i + offset];
-                normalization += windowed[i] * windowed[i];
-            }
-            
-            if (normalization > 0) {
-                correlation = correlation / Math.sqrt(normalization);
-                if (correlation > bestCorrelation) {
-                    bestCorrelation = correlation;
-                    bestOffset = offset;
-                }
-            }
-        }
-        
-        // Use autocorrelation result if it's reliable
-        if (bestCorrelation > 0.2 && bestOffset > 0) {
-            const autocorrFreq = sampleRate / bestOffset;
-            // Validate and use autocorrelation frequency if it's close to FFT estimate
-            if (autocorrFreq >= 50 && autocorrFreq <= 400) {
-                // Weighted average: favor autocorrelation but consider FFT
-                const weight = bestCorrelation;
-                frequency = weight * autocorrFreq + (1 - weight) * frequency;
-            }
-        }
-        
-        // Final validation
-        if (frequency >= 50 && frequency <= 400) {
-            return frequency;
-        }
-        
-        return null;
+        return {
+            name: this.NOTE_NAMES[noteIndex],
+            octave: octave,
+            frequency: frequency
+        };
     }
 
-    // Update orange circle position based on tuning accuracy
+    // Update note text in circle
+    updateNoteText(frequency) {
+        if (!this.elements.noteText) return;
+        
+        if (!frequency || frequency <= 0) {
+            // Hide text when no frequency detected
+            this.elements.noteText.textContent = '';
+            this.elements.noteText.style.opacity = '0';
+            return;
+        }
+        
+        const note = this.frequencyToNote(frequency);
+        if (note) {
+            // Show note name without octave for cleaner display
+            this.elements.noteText.textContent = note.name;
+            this.elements.noteText.style.opacity = '1';
+        } else {
+            this.elements.noteText.textContent = '';
+            this.elements.noteText.style.opacity = '0';
+        }
+    }
+
+    // Update orange circle position based on tuning accuracy with smoothing
     updateCirclePosition(cents) {
         const maxOffset = 40; // Maximum pixel offset for visual feedback
         
         // Clamp cents to maximum offset for display
         const clampedCents = Math.max(-this.MAX_OFFSET, Math.min(this.MAX_OFFSET, cents));
         
-        // Calculate position: -maxOffset (left/flat) to +maxOffset (right/sharp)
-        const offset = (clampedCents / this.MAX_OFFSET) * maxOffset;
+        // Calculate target position: 
+        // Positive cents (sharp/over-tuned) -> right (+)
+        // Negative cents (flat/under-tuned) -> left (-)
+        const targetOffset = (clampedCents / this.MAX_OFFSET) * maxOffset;
         
-        // Apply transform with smooth transition
-        this.elements.orangeCircle.style.transition = 'transform 0.05s ease-out';
-        this.elements.orangeCircle.style.transform = `translate(calc(-50% + ${offset}px), -50%)`;
+        // Apply exponential smoothing for smooth movement
+        this.smoothedOffset = this.smoothedOffset + (targetOffset - this.smoothedOffset) * this.smoothingFactor;
+        
+        // Apply transform (no CSS transition, smoothing is handled by the smoothing algorithm)
+        this.elements.orangeCircle.style.transition = 'none';
+        this.elements.orangeCircle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
     }
 
     // Check if string is tuned
@@ -308,71 +435,18 @@ class GuitarTuner {
         if (this.currentStringIndex < this.STRING_FREQUENCIES.length - 1) {
             this.currentStringIndex++;
             this.updateUI();
-            // Reset circle to center
+            // Reset smoothed offset to center smoothly
+            this.smoothedOffset = 0;
             this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
             this.isTuned = false;
         } else {
             // All strings tuned
             this.allStringsTuned = true;
             this.updateUI();
+            this.smoothedOffset = 0;
             this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
             this.isTuned = false;
         }
-    }
-
-    // Animation loop
-    animate() {
-        if (!this.analyser || !this.frequencyData || this.allStringsTuned) {
-            this.animationFrameId = requestAnimationFrame(() => this.animate());
-            return;
-        }
-
-        const detectedFrequency = this.detectPitch();
-        const currentString = this.STRING_FREQUENCIES[this.currentStringIndex];
-        
-        if (detectedFrequency && detectedFrequency > 0) {
-            const cents = this.frequencyToCents(detectedFrequency, currentString.frequency);
-            this.updateCirclePosition(cents);
-            
-            // Check if tuned
-            if (!this.isTuned && this.checkIfTuned(cents)) {
-                this.isTuned = true;
-                // Clear any existing timeout
-                if (this.tuningTimeout) {
-                    clearTimeout(this.tuningTimeout);
-                }
-                // Wait to confirm tuning is stable before moving to next string
-                this.tuningTimeout = setTimeout(() => {
-                    if (this.isTuned && !this.allStringsTuned) {
-                        this.moveToNextString();
-                    }
-                    this.tuningTimeout = null;
-                }, this.TUNED_CONFIRMATION_TIME);
-            } else if (!this.checkIfTuned(cents)) {
-                // String is out of tune, cancel timeout and reset flag
-                if (this.tuningTimeout) {
-                    clearTimeout(this.tuningTimeout);
-                    this.tuningTimeout = null;
-                }
-                this.isTuned = false;
-            }
-        } else {
-            // No frequency detected, smoothly return circle to center
-            const currentTransform = this.elements.orangeCircle.style.transform;
-            if (currentTransform && currentTransform !== 'translate(-50%, -50%)') {
-                // Gradually return to center
-                this.elements.orangeCircle.style.transition = 'transform 0.3s ease-out';
-                this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
-            }
-            // Cancel tuning timeout if no sound
-            if (this.tuningTimeout) {
-                clearTimeout(this.tuningTimeout);
-                this.tuningTimeout = null;
-            }
-            this.isTuned = false;
-        }
-
-        this.animationFrameId = requestAnimationFrame(() => this.animate());
     }
 
     // Cleanup resources
@@ -380,8 +454,15 @@ class GuitarTuner {
         if (this.tuningTimeout) {
             clearTimeout(this.tuningTimeout);
         }
-        if (this.animationFrameId) {
-            cancelAnimationFrame(this.animationFrameId);
+        if (this.updateIntervalId) {
+            clearInterval(this.updateIntervalId);
+        }
+        if (this.audioProcessor) {
+            this.audioProcessor.disconnect();
+        }
+        if (this.crepeModel) {
+            // Cleanup CREPE model if needed
+            this.crepeModel = null;
         }
         if (this.microphone && this.microphone.mediaStream) {
             this.microphone.mediaStream.getTracks().forEach(track => track.stop());
@@ -409,4 +490,3 @@ window.addEventListener('beforeunload', () => {
         tuner.cleanup();
     }
 });
-

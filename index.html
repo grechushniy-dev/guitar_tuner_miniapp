@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Guitar Tuner</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- TensorFlow.js for CREPE model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+    <!-- Crepe.js for pitch detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@marl/crepe@latest/dist/crepe.min.js"></script>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -19,7 +23,9 @@
         <!-- Tuning Indicator -->
         <div class="tuning-container">
             <div class="gray-circle"></div>
-            <div class="orange-circle" id="orangeCircle"></div>
+            <div class="orange-circle" id="orangeCircle">
+                <span class="note-text" id="noteText">E</span>
+            </div>
         </div>
 
         <!-- Instruction Text -->
