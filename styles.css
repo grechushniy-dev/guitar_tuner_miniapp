@@ -1,0 +1,214 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background-color: #F5F0EB;
+    color: #000;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Main content */
+.main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px 20px;
+    position: relative;
+}
+
+/* Tuning indicator container */
+.tuning-container {
+    position: relative;
+    width: 250px;
+    height: 250px;
+    margin-bottom: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Gray circle (background/target) */
+.gray-circle {
+    position: absolute;
+    width: 200px;
+    height: 200px;
+    border: 8px solid #D1D1D6;
+    border-radius: 50%;
+    background: transparent;
+}
+
+/* Orange circle (tuning indicator) */
+.orange-circle {
+    position: absolute;
+    width: 167px;
+    height: 167px;
+    background-color: #F76F3F;
+    border: none;
+    border-radius: 50%;
+    transition: transform 0.1s ease-out;
+    z-index: 10;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Instruction text */
+.instruction-text {
+    font-size: 24px;
+    font-weight: 500;
+    color: #F76F3F;
+    margin-bottom: 60px;
+    text-align: center;
+    min-height: 30px;
+}
+
+.tuned-message {
+    font-size: 24px;
+    font-weight: 500;
+    color: #F76F3F;
+    margin-bottom: 10px;
+    text-align: center;
+}
+
+.tuned-submessage {
+    font-size: 17px;
+    color: #000;
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+/* String indicators */
+.string-indicators {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 24px;
+    margin-bottom: 8px;
+}
+
+.string-letter {
+    font-size: 24px;
+    font-weight: 600;
+    color: #8E8E93;
+    transition: all 0.3s ease;
+}
+
+.string-letter.active {
+    color: #000;
+    font-weight: 700;
+    font-size: 28px;
+}
+
+.string-letter.highlighted {
+    color: #F76F3F;
+    font-weight: 700;
+    font-size: 28px;
+}
+
+/* Underline bracket */
+.string-bracket {
+    width: 300px;
+    height: 2px;
+    background-color: #F76F3F;
+    margin: 0 auto 8px;
+    position: relative;
+}
+
+.string-bracket::before,
+.string-bracket::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border: 2px solid #F76F3F;
+    top: -5px;
+}
+
+.string-bracket::before {
+    left: 0;
+    border-right: none;
+    border-bottom: none;
+}
+
+.string-bracket::after {
+    right: 0;
+    border-left: none;
+    border-bottom: none;
+}
+
+/* Tuning type */
+.tuning-type {
+    font-size: 15px;
+    color: #F76F3F;
+    text-align: center;
+    margin-top: 8px;
+}
+
+/* Microphone permission overlay */
+.permission-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #F5F0EB;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    z-index: 1000;
+}
+
+.permission-overlay.hidden {
+    display: none;
+}
+
+.permission-text {
+    font-size: 18px;
+    color: #000;
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.permission-btn {
+    background-color: #F76F3F;
+    color: #FFFFFF;
+    border: none;
+    padding: 14px 32px;
+    border-radius: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* Home indicator (iOS) */
+.home-indicator {
+    width: 134px;
+    height: 5px;
+    background-color: #000;
+    border-radius: 3px;
+    margin: 8px auto;
+}
+
+/* Loading state */
+.loading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Hidden class */
+.hidden {
+    display: none !important;
+}
+

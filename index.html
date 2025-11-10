@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Guitar Tuner</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Microphone Permission Overlay -->
+        <div class="permission-overlay" id="permissionOverlay">
+            <div class="permission-text">Для настройки гитары необходим доступ к микрофону</div>
+            <button class="permission-btn" onclick="requestMicrophoneAccess()">Разрешить доступ</button>
+        </div>
+
+        <!-- Tuning Indicator -->
+        <div class="tuning-container">
+            <div class="gray-circle"></div>
+            <div class="orange-circle" id="orangeCircle"></div>
+        </div>
+
+        <!-- Instruction Text -->
+        <div class="instruction-text" id="instructionText">Pull sixth string</div>
+        <div class="tuned-message hidden" id="tunedMessage">Awesome!</div>
+        <div class="tuned-submessage hidden" id="tunedSubmessage">Now your guitar is tuned.</div>
+
+        <!-- String Indicators -->
+        <div class="string-indicators">
+            <span class="string-letter highlighted" data-string="0">E</span>
+            <span class="string-letter" data-string="1">A</span>
+            <span class="string-letter" data-string="2">D</span>
+            <span class="string-letter" data-string="3">G</span>
+            <span class="string-letter" data-string="4">B</span>
+            <span class="string-letter" data-string="5">E</span>
+        </div>
+
+        <!-- Underline Bracket -->
+        <div class="string-bracket"></div>
+
+        <!-- Tuning Type -->
+        <div class="tuning-type">Standard guitar tuning</div>
+    </div>
+
+    <!-- Home Indicator -->
+    <div class="home-indicator"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
