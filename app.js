@@ -83,11 +83,15 @@ class GuitarTuner {
         this.microphone = this.audioContext.createMediaStreamSource(stream);
         this.microphone.connect(this.analyser);
 
-        this.analyser.fftSize = 16384; // Higher FFT size for better frequency resolution
-        this.analyser.smoothingTimeConstant = 0.3; // Lower smoothing for more responsive detection
+        // Use larger FFT size for better frequency resolution (16384 is well supported)
+        this.analyser.fftSize = 16384;
+        this.analyser.smoothingTimeConstant = 0.1; // Very low smoothing for responsive detection
+        this.analyser.minDecibels = -90;
+        this.analyser.maxDecibels = -10;
+        
         const bufferLength = this.analyser.frequencyBinCount;
-        this.dataArray = new Float32Array(bufferLength);
-        this.frequencyData = new Float32Array(bufferLength);
+        this.dataArray = new Float32Array(this.analyser.fftSize); // Time domain data (fftSize samples)
+        this.frequencyData = new Uint8Array(bufferLength); // Frequency domain data (frequencyBinCount bins)
 
         this.startTuning();
     }
@@ -115,18 +119,19 @@ class GuitarTuner {
         this.elements.tunedSubmessage.classList.add('hidden');
 
         // Update string indicators
+        // Tuned strings = orange (highlighted), current string = black (active), future strings = gray (default)
         this.STRING_FREQUENCIES.forEach((str, index) => {
             const element = document.querySelector(`[data-string="${index}"]`);
             if (index < this.currentStringIndex) {
-                // Already tuned strings
-                element.classList.remove('highlighted', 'active');
-                element.classList.add('active');
-            } else if (index === this.currentStringIndex) {
-                // Current string
+                // Already tuned strings - orange
                 element.classList.remove('active');
                 element.classList.add('highlighted');
+            } else if (index === this.currentStringIndex) {
+                // Current string being tuned - black
+                element.classList.remove('highlighted');
+                element.classList.add('active');
             } else {
-                // Future strings
+                // Future strings - gray (default)
                 element.classList.remove('highlighted', 'active');
             }
         });
@@ -140,57 +145,112 @@ class GuitarTuner {
         return 1200 * Math.log2(detectedFreq / targetFreq);
     }
 
-    // Detect pitch using autocorrelation with improved algorithm
+    // Detect pitch using hybrid approach: FFT for initial detection + autocorrelation for accuracy
     detectPitch() {
-        if (!this.analyser || !this.dataArray) return null;
+        if (!this.analyser || !this.frequencyData || !this.dataArray) return null;
 
-        this.analyser.getFloatTimeDomainData(this.dataArray);
-        
         const sampleRate = this.audioContext.sampleRate;
-        const buffer = this.dataArray;
-        const bufferLength = buffer.length;
+        const fftSize = this.analyser.fftSize;
         
-        // Check signal strength
-        let signalStrength = 0;
+        // Method 1: Use FFT for quick frequency estimation
+        this.analyser.getByteFrequencyData(this.frequencyData);
+        
+        const bufferLength = this.frequencyData.length;
+        const freqResolution = sampleRate / fftSize;
+        
+        // Check signal strength in frequency domain
+        let totalEnergy = 0;
         for (let i = 0; i < bufferLength; i++) {
-            signalStrength += Math.abs(buffer[i]);
+            totalEnergy += this.frequencyData[i];
         }
-        signalStrength /= bufferLength;
+        const averageEnergy = totalEnergy / bufferLength;
         
         // Ignore very weak signals
-        if (signalStrength < 0.01) {
+        if (averageEnergy < 3) {
+            return null;
+        }
+        
+        // Focus on guitar frequency range: 50-400 Hz
+        const minBin = Math.max(1, Math.floor(50 / freqResolution));
+        const maxBin = Math.min(Math.floor(400 / freqResolution), bufferLength - 2);
+        
+        // Find peaks in the frequency spectrum
+        let peaks = [];
+        for (let i = minBin; i <= maxBin; i++) {
+            const magnitude = this.frequencyData[i];
+            // Check if this is a local maximum
+            if (magnitude > this.frequencyData[i - 1] && 
+                magnitude > this.frequencyData[i + 1] && 
+                magnitude > 15) { // Minimum magnitude threshold
+                peaks.push({ bin: i, magnitude: magnitude });
+            }
+        }
+        
+        // Sort peaks by magnitude
+        peaks.sort((a, b) => b.magnitude - a.magnitude);
+        
+        if (peaks.length === 0) {
+            return null;
+        }
+        
+        // Use the strongest peak as candidate
+        const candidatePeak = peaks[0];
+        
+        // Parabolic interpolation for sub-bin accuracy
+        const bin = candidatePeak.bin;
+        const y1 = this.frequencyData[bin - 1];
+        const y2 = this.frequencyData[bin];
+        const y3 = this.frequencyData[bin + 1];
+        
+        let frequency = bin * freqResolution;
+        const denom = y1 - 2 * y2 + y3;
+        if (Math.abs(denom) > 0.001) {
+            const offset = (y1 - y3) / (2 * denom);
+            frequency = (bin + offset) * freqResolution;
+        }
+        
+        // Method 2: Use autocorrelation on time domain data for verification
+        // This helps filter out harmonics and gives more accurate fundamental frequency
+        this.analyser.getFloatTimeDomainData(this.dataArray);
+        const timeDataLength = this.dataArray.length;
+        
+        // Check signal strength in time domain
+        let signalStrength = 0;
+        for (let i = 0; i < timeDataLength; i++) {
+            signalStrength += Math.abs(this.dataArray[i]);
+        }
+        signalStrength /= timeDataLength;
+        
+        if (signalStrength < 0.005) {
             return null;
         }
         
         // Apply Hanning window
-        const windowed = new Float32Array(bufferLength);
-        for (let i = 0; i < bufferLength; i++) {
-            windowed[i] = buffer[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (bufferLength - 1)));
+        const windowed = new Float32Array(timeDataLength);
+        for (let i = 0; i < timeDataLength; i++) {
+            windowed[i] = this.dataArray[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (timeDataLength - 1)));
         }
         
-        // Autocorrelation
+        // Autocorrelation around the FFT-detected frequency
+        const expectedPeriod = sampleRate / frequency;
+        const searchRange = Math.floor(expectedPeriod * 0.3); // Search ±30% around expected period
+        const minPeriod = Math.max(1, Math.floor(expectedPeriod - searchRange));
+        const maxPeriod = Math.min(Math.floor(expectedPeriod + searchRange), Math.floor(timeDataLength / 2));
+        
         let bestOffset = -1;
         let bestCorrelation = -1;
-        const correlationThreshold = 0.3;
         
-        // Search in frequency range 50-400 Hz for guitar
-        const minPeriod = Math.floor(sampleRate / 400);
-        const maxPeriod = Math.floor(sampleRate / 50);
-        
-        // Autocorrelation function
-        for (let offset = minPeriod; offset < maxPeriod && offset < bufferLength / 2; offset++) {
+        for (let offset = minPeriod; offset <= maxPeriod; offset++) {
             let correlation = 0;
             let normalization = 0;
             
-            for (let i = 0; i < bufferLength - offset; i++) {
+            for (let i = 0; i < timeDataLength - offset; i++) {
                 correlation += windowed[i] * windowed[i + offset];
                 normalization += windowed[i] * windowed[i];
             }
             
             if (normalization > 0) {
                 correlation = correlation / Math.sqrt(normalization);
-                
-                // Prefer correlations that are local maxima
                 if (correlation > bestCorrelation) {
                     bestCorrelation = correlation;
                     bestOffset = offset;
@@ -198,13 +258,20 @@ class GuitarTuner {
             }
         }
         
-        // Check if we found a valid pitch
-        if (bestCorrelation > correlationThreshold && bestOffset > 0) {
-            const frequency = sampleRate / bestOffset;
-            // Validate frequency is in reasonable range
-            if (frequency >= 50 && frequency <= 400) {
-                return frequency;
+        // Use autocorrelation result if it's reliable
+        if (bestCorrelation > 0.2 && bestOffset > 0) {
+            const autocorrFreq = sampleRate / bestOffset;
+            // Validate and use autocorrelation frequency if it's close to FFT estimate
+            if (autocorrFreq >= 50 && autocorrFreq <= 400) {
+                // Weighted average: favor autocorrelation but consider FFT
+                const weight = bestCorrelation;
+                frequency = weight * autocorrFreq + (1 - weight) * frequency;
             }
+        }
+        
+        // Final validation
+        if (frequency >= 50 && frequency <= 400) {
+            return frequency;
         }
         
         return null;
@@ -255,7 +322,7 @@ class GuitarTuner {
 
     // Animation loop
     animate() {
-        if (!this.analyser || !this.dataArray || this.allStringsTuned) {
+        if (!this.analyser || !this.frequencyData || this.allStringsTuned) {
             this.animationFrameId = requestAnimationFrame(() => this.animate());
             return;
         }
