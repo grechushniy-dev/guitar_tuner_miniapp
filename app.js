@@ -1,19 +1,3 @@
-// Load Pitchy library dynamically
-let PitchDetector = null;
-
-async function loadPitchy() {
-    try {
-        const pitchyModule = await import('https://cdn.jsdelivr.net/npm/pitchy@4/+esm');
-        PitchDetector = pitchyModule.PitchDetector;
-        window.PitchDetector = PitchDetector; // Also set on window for compatibility
-        console.log('Pitchy loaded successfully via dynamic import');
-        return true;
-    } catch (error) {
-        console.error('Error loading Pitchy:', error);
-        return false;
-    }
-}
-
 // Telegram Mini App initialization
 class GuitarTuner {
     constructor() {
@@ -39,24 +23,24 @@ class GuitarTuner {
         this.MAX_OFFSET = 50; // Maximum offset in cents for visual display
         this.TUNED_CONFIRMATION_TIME = 800; // Time in ms to confirm tuning is stable
         this.UPDATE_INTERVAL = 100; // Update every 100ms
-        this.CLARITY_THRESHOLD = 0.7; // Minimum clarity for valid pitch detection
 
         // State variables
         this.currentStringIndex = 0;
         this.audioContext = null;
         this.microphone = null;
         this.analyser = null;
-        this.pitchDetector = null;
         this.updateIntervalId = null;
         this.isTuned = false;
         this.allStringsTuned = false;
         this.tuningTimeout = null;
         this.smoothedOffset = 0; // For smooth circle movement
-        this.smoothingFactor = 0.15; // Smoothing factor (0-1), lower = smoother
+        this.smoothingFactor = 0.2; // Smoothing factor (0-1), lower = smoother
         this.currentFrequency = null;
         this.currentNote = null;
-        this.audioInput = null;
-        this.PitchDetector = null; // Will be set after library loads
+
+        // Audio processing buffers
+        this.timeData = null;
+        this.frequencyData = null;
 
         // DOM elements
         this.elements = {
@@ -83,34 +67,6 @@ class GuitarTuner {
 
     // Initialize app
     async init() {
-        // Load Pitchy library first
-        console.log('Loading Pitchy library...');
-        const pitchyLoaded = await loadPitchy();
-        
-        if (!pitchyLoaded || !PitchDetector) {
-            console.error('Failed to load Pitchy library');
-            
-            // Show user-friendly error message
-            if (this.elements.permissionOverlay) {
-                this.elements.permissionOverlay.innerHTML = `
-                    <div class="permission-text" style="color: #ff0000; margin-bottom: 20px;">
-                        Ошибка загрузки библиотеки анализа звука
-                    </div>
-                    <div class="permission-text" style="font-size: 14px; margin-bottom: 30px;">
-                        Пожалуйста, обновите страницу или проверьте подключение к интернету
-                    </div>
-                    <button class="permission-btn" onclick="location.reload()">Обновить страницу</button>
-                `;
-            } else {
-                alert('Ошибка загрузки библиотеки анализа звука (pitchy). Пожалуйста, обновите страницу.');
-            }
-            return;
-        }
-
-        // Store PitchDetector reference
-        this.PitchDetector = PitchDetector;
-        console.log('Pitchy PitchDetector loaded and ready');
-
         // Check if microphone access is already granted
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -126,19 +82,12 @@ class GuitarTuner {
 
     // Request microphone access
     async requestMicrophoneAccess() {
-        // Check if PitchDetector is available
-        if (!PitchDetector && !this.PitchDetector) {
-            console.error('PitchDetector is not available');
-            // Try to load it again
-            const loaded = await loadPitchy();
-            if (!loaded) {
-                alert('Библиотека анализа звука не загружена. Пожалуйста, обновите страницу.');
-                return;
-            }
-            this.PitchDetector = PitchDetector;
-        }
-
         try {
+            // Resume audio context if it exists and is suspended
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+            }
+
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             await this.setupAudio(stream);
             if (this.elements.permissionOverlay) {
@@ -155,69 +104,80 @@ class GuitarTuner {
         }
     }
 
-    // Setup audio processing with pitchy
+    // Setup audio processing
     async setupAudio(stream) {
         try {
-            // Validate PitchDetector is available
-            const PitchDetectorToUse = PitchDetector || this.PitchDetector || window.PitchDetector;
-            
-            if (!PitchDetectorToUse) {
-                throw new Error('PitchDetector не загружен. Пожалуйста, обновите страницу.');
-            }
-
-            if (typeof PitchDetectorToUse.forFloat32Array !== 'function') {
-                throw new Error('PitchDetector.forFloat32Array не доступен. Библиотека pitchy загружена неправильно.');
-            }
-
             // Initialize audio context
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Resume audio context if suspended (required in some browsers)
+            if (this.audioContext.state === 'suspended') {
+                console.log('AudioContext is suspended, attempting to resume...');
+                await this.audioContext.resume();
+            }
+            
             const sampleRate = this.audioContext.sampleRate;
             
             if (!sampleRate || isNaN(sampleRate)) {
                 throw new Error('Не удалось получить sample rate из AudioContext');
             }
             
-            console.log(`AudioContext sample rate: ${sampleRate} Hz`);
+            console.log(`AudioContext initialized. State: ${this.audioContext.state}, Sample rate: ${sampleRate} Hz`);
+
+            // Check stream is active
+            const audioTracks = stream.getAudioTracks();
+            console.log('Audio tracks:', audioTracks.length);
+            if (audioTracks.length > 0) {
+                console.log('Audio track settings:', audioTracks[0].getSettings());
+                console.log('Audio track enabled:', audioTracks[0].enabled);
+                console.log('Audio track readyState:', audioTracks[0].readyState);
+            }
 
             // Create microphone source
             this.microphone = this.audioContext.createMediaStreamSource(stream);
 
-            // Create analyser node
+            // Create analyser node with optimal settings
             this.analyser = this.audioContext.createAnalyser();
-            if (!this.analyser) {
-                throw new Error('Не удалось создать AnalyserNode');
-            }
-
-            // Set analyser properties
-            this.analyser.fftSize = 8192; // Larger FFT for better frequency resolution
-            this.analyser.smoothingTimeConstant = 0.3;
+            this.analyser.fftSize = 8192; // Good balance between resolution and performance
+            this.analyser.smoothingTimeConstant = 0.05; // Very low smoothing for maximum responsiveness
+            this.analyser.minDecibels = -100; // Lower for better sensitivity
+            this.analyser.maxDecibels = 0; // Higher for better sensitivity
+            
             this.microphone.connect(this.analyser);
 
-            // Validate fftSize was set correctly
-            if (!this.analyser.fftSize || this.analyser.fftSize === 0) {
-                throw new Error('Не удалось установить fftSize для analyser');
-            }
+            // Initialize buffers
+            const bufferLength = this.analyser.frequencyBinCount;
+            this.timeData = new Float32Array(this.analyser.fftSize);
+            this.frequencyData = new Uint8Array(bufferLength);
 
-            // Initialize Pitchy detector
-            console.log('Initializing Pitchy detector with sample rate:', sampleRate);
+            console.log(`Analyser initialized. FFT size: ${this.analyser.fftSize}, Buffer length: ${bufferLength}, Sample rate: ${sampleRate} Hz`);
             
-            try {
-                this.pitchDetector = PitchDetectorToUse.forFloat32Array(sampleRate);
-                
-                if (!this.pitchDetector) {
-                    throw new Error('PitchDetector.forFloat32Array вернул null или undefined');
+            // Handle audio context state changes
+            this.audioContext.addEventListener('statechange', () => {
+                console.log('AudioContext state changed to:', this.audioContext.state);
+                if (this.audioContext.state === 'suspended') {
+                    console.warn('AudioContext was suspended - user interaction may be required');
+                    // Try to resume automatically
+                    this.audioContext.resume().then(() => {
+                        console.log('AudioContext resumed successfully');
+                    }).catch(err => {
+                        console.error('Failed to resume AudioContext:', err);
+                    });
                 }
+            });
 
-                if (!this.pitchDetector.inputLength || this.pitchDetector.inputLength === 0) {
-                    throw new Error('pitchDetector.inputLength не определен');
-                }
-
-                this.audioInput = new Float32Array(this.pitchDetector.inputLength);
-                console.log(`Pitchy detector initialized successfully. Input length: ${this.pitchDetector.inputLength}`);
-            } catch (pitchError) {
-                console.error('Error initializing Pitchy detector:', pitchError);
-                throw new Error('Ошибка инициализации детектора высоты тона: ' + pitchError.message);
-            }
+            // Test audio input multiple times to verify it's working
+            setTimeout(() => {
+                this.testAudioInput();
+            }, 300);
+            
+            setTimeout(() => {
+                this.testAudioInput();
+            }, 1000);
+            
+            setTimeout(() => {
+                this.testAudioInput();
+            }, 2000);
 
             // Start tuning process
             this.startTuning();
@@ -243,79 +203,144 @@ class GuitarTuner {
         }
     }
 
-    // Get pitch using Pitchy (called every 100ms)
-    getPitch() {
-        // Validate required components
-        if (!this.analyser) {
-            console.warn('Analyser not initialized');
+    // Test audio input to verify microphone is working
+    testAudioInput() {
+        if (!this.analyser || !this.timeData) {
+            console.warn('Cannot test audio input - analyser not ready');
             return;
         }
 
-        if (!this.pitchDetector) {
-            console.warn('PitchDetector not initialized');
-            return;
+        this.analyser.getFloatTimeDomainData(this.timeData);
+        
+        let signalStrength = 0;
+        let maxAmplitude = 0;
+        let minAmplitude = Infinity;
+        for (let i = 0; i < this.timeData.length; i++) {
+            const abs = Math.abs(this.timeData[i]);
+            signalStrength += abs;
+            if (abs > maxAmplitude) {
+                maxAmplitude = abs;
+            }
+            if (abs < minAmplitude) {
+                minAmplitude = abs;
+            }
         }
+        signalStrength /= this.timeData.length;
+        
+        // Also check frequency data
+        if (this.frequencyData) {
+            this.analyser.getByteFrequencyData(this.frequencyData);
+            let freqEnergy = 0;
+            for (let i = 0; i < this.frequencyData.length; i++) {
+                freqEnergy += this.frequencyData[i];
+            }
+            freqEnergy /= this.frequencyData.length;
+            console.log(`Audio test - Time domain: strength=${signalStrength.toFixed(6)}, max=${maxAmplitude.toFixed(6)}, min=${minAmplitude.toFixed(6)} | Frequency domain: avg energy=${freqEnergy.toFixed(2)}`);
+        } else {
+            console.log(`Audio test - Signal strength: ${signalStrength.toFixed(6)}, Max amplitude: ${maxAmplitude.toFixed(6)}, Min amplitude: ${minAmplitude.toFixed(6)}`);
+        }
+        
+        if (signalStrength < 0.00001 && maxAmplitude < 0.001) {
+            console.warn('⚠️ WARNING: Very weak or no audio signal detected. Microphone may not be receiving sound.');
+        } else if (signalStrength > 0.0001 || maxAmplitude > 0.01) {
+            console.log('✅ Audio input is working - signal detected');
+        } else {
+            console.log('ℹ️ Audio input detected but signal is weak');
+        }
+    }
 
-        if (!this.audioInput || !this.audioInput.length) {
-            console.warn('AudioInput not initialized');
-            return;
+    // Detect pitch using FFT-based peak detection (fast and reliable for musical tones)
+    detectPitch() {
+        if (!this.analyser || !this.frequencyData) {
+            return null;
         }
 
         try {
-            // Validate analyser.fftSize
+            const sampleRate = this.audioContext.sampleRate;
             const fftSize = this.analyser.fftSize;
-            if (!fftSize || fftSize === 0) {
-                console.warn('Invalid fftSize:', fftSize);
-                return;
+            const bufferLength = this.frequencyData.length;
+            const freqResolution = sampleRate / fftSize;
+
+            // Get frequency domain data
+            this.analyser.getByteFrequencyData(this.frequencyData);
+
+            // Check overall signal energy
+            let totalEnergy = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                totalEnergy += this.frequencyData[i];
+            }
+            const averageEnergy = totalEnergy / bufferLength;
+
+            // Very low threshold for maximum sensitivity
+            if (averageEnergy < 0.5) {
+                return null;
             }
 
-            // Get time domain data
-            const buffer = new Float32Array(fftSize);
-            this.analyser.getFloatTimeDomainData(buffer);
+            // Focus on guitar frequency range: 50-400 Hz
+            const minBin = Math.max(1, Math.floor(50 / freqResolution));
+            const maxBin = Math.min(Math.floor(400 / freqResolution), bufferLength - 2);
 
-            // Copy required length to audioInput
-            const length = Math.min(buffer.length, this.audioInput.length);
-            if (length === 0) {
-                console.warn('Buffer length is 0');
-                return;
+            // Find all local maxima (peaks) in the frequency spectrum
+            const peaks = [];
+            for (let i = minBin; i <= maxBin; i++) {
+                const magnitude = this.frequencyData[i];
+                // Check if this is a local maximum
+                if (magnitude > this.frequencyData[i - 1] && 
+                    magnitude > this.frequencyData[i + 1] && 
+                    magnitude > 3) { // Very low threshold
+                    peaks.push({
+                        bin: i,
+                        magnitude: magnitude,
+                        frequency: i * freqResolution
+                    });
+                }
             }
 
-            for (let i = 0; i < length; i++) {
-                this.audioInput[i] = buffer[i];
+            if (peaks.length === 0) {
+                return null;
             }
 
-            // Detect pitch using Pitchy
-            if (typeof this.pitchDetector.findPitch !== 'function') {
-                console.error('pitchDetector.findPitch is not a function');
-                return;
+            // Sort peaks by magnitude
+            peaks.sort((a, b) => b.magnitude - a.magnitude);
+
+            // Use the strongest peak
+            const strongestPeak = peaks[0];
+
+            // Parabolic interpolation for sub-bin accuracy
+            const bin = strongestPeak.bin;
+            const y1 = this.frequencyData[bin - 1];
+            const y2 = this.frequencyData[bin];
+            const y3 = this.frequencyData[bin + 1];
+
+            let frequency = strongestPeak.frequency;
+
+            // Parabolic interpolation
+            const denom = y1 - 2 * y2 + y3;
+            if (Math.abs(denom) > 0.001) {
+                const offset = (y1 - y3) / (2 * denom);
+                frequency = (bin + offset) * freqResolution;
             }
 
-            const [pitch, clarity] = this.pitchDetector.findPitch(this.audioInput);
-            
-            // Validate pitch and clarity values
-            if (typeof pitch !== 'number' || typeof clarity !== 'number') {
-                console.warn('Invalid pitch or clarity values:', pitch, clarity);
-                this.currentFrequency = null;
-                this.currentNote = null;
-                return;
+            // Validate frequency
+            if (frequency >= 50 && frequency <= 400) {
+                // Additional validation: check if this peak is significantly stronger than noise
+                // Compare with average energy in the range
+                let rangeEnergy = 0;
+                for (let i = minBin; i <= maxBin; i++) {
+                    rangeEnergy += this.frequencyData[i];
+                }
+                rangeEnergy /= (maxBin - minBin + 1);
+
+                // Peak should be at least 2x stronger than average
+                if (strongestPeak.magnitude > rangeEnergy * 1.5) {
+                    return frequency;
+                }
             }
-            
-            // Only use pitch if clarity is above threshold
-            if (pitch > 0 && clarity > this.CLARITY_THRESHOLD && pitch >= 50 && pitch <= 400) {
-                this.currentFrequency = pitch;
-                this.currentNote = this.frequencyToNote(pitch);
-                
-                // Log to console as requested
-                console.log(`Frequency: ${pitch.toFixed(2)} Hz, Note: ${this.currentNote ? this.currentNote.name : 'N/A'}, Clarity: ${(clarity * 100).toFixed(1)}%`);
-            } else {
-                this.currentFrequency = null;
-                this.currentNote = null;
-            }
+
+            return null;
         } catch (error) {
-            console.error('Error getting pitch:', error);
-            // Don't set to null immediately to avoid flickering, but log the error
-            // this.currentFrequency = null;
-            // this.currentNote = null;
+            console.error('Error detecting pitch:', error);
+            return null;
         }
     }
 
@@ -323,15 +348,33 @@ class GuitarTuner {
     startTuning() {
         this.updateUI();
         
+        let detectionCount = 0;
+        let lastLogTime = Date.now();
+        
         // Start pitch detection and UI update interval (every 100ms)
         this.updateIntervalId = setInterval(() => {
-            // Get pitch from Pitchy
-            this.getPitch();
+            const frequency = this.detectPitch();
+            detectionCount++;
             
-            // Update UI with current frequency
-            if (this.currentFrequency !== null) {
-                this.updateTuning(this.currentFrequency);
+            // Log detection status every 2 seconds for debugging
+            if (Date.now() - lastLogTime > 2000) {
+                console.log(`Pitch detection attempts: ${detectionCount}, Last frequency: ${frequency ? frequency.toFixed(2) + ' Hz' : 'none detected'}`);
+                lastLogTime = Date.now();
+                detectionCount = 0;
+            }
+            
+            if (frequency && frequency > 0) {
+                this.currentFrequency = frequency;
+                this.currentNote = this.frequencyToNote(frequency);
+                
+                // Log to console as requested
+                console.log(`Frequency: ${frequency.toFixed(2)} Hz, Note: ${this.currentNote ? this.currentNote.name : 'N/A'}`);
+                
+                // Update UI
+                this.updateTuning(frequency);
             } else {
+                this.currentFrequency = null;
+                this.currentNote = null;
                 this.updateTuning(null);
             }
         }, this.UPDATE_INTERVAL);
@@ -340,7 +383,7 @@ class GuitarTuner {
     // Update tuning based on detected frequency
     updateTuning(frequency) {
         if (!frequency || frequency <= 0) {
-            // No frequency detected
+            // No frequency detected, smoothly return circle to center
             this.smoothedOffset = this.smoothedOffset + (0 - this.smoothedOffset) * this.smoothingFactor;
             this.elements.orangeCircle.style.transition = 'none';
             this.elements.orangeCircle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
@@ -412,6 +455,7 @@ class GuitarTuner {
         }
 
         // Update string indicators
+        // Tuned strings = orange (highlighted), current string = black (active), future strings = gray (default)
         this.STRING_FREQUENCIES.forEach((str, index) => {
             const element = document.querySelector(`[data-string="${index}"]`);
             if (index < this.currentStringIndex) {
