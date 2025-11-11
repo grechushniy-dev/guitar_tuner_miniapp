@@ -1,3 +1,19 @@
+// Load Pitchy library dynamically
+let PitchDetector = null;
+
+async function loadPitchy() {
+    try {
+        const pitchyModule = await import('https://cdn.jsdelivr.net/npm/pitchy@4/+esm');
+        PitchDetector = pitchyModule.PitchDetector;
+        window.PitchDetector = PitchDetector; // Also set on window for compatibility
+        console.log('Pitchy loaded successfully via dynamic import');
+        return true;
+    } catch (error) {
+        console.error('Error loading Pitchy:', error);
+        return false;
+    }
+}
+
 // Telegram Mini App initialization
 class GuitarTuner {
     constructor() {
@@ -67,62 +83,100 @@ class GuitarTuner {
 
     // Initialize app
     async init() {
-        // Wait for Pitchy to be available (check multiple possible exports)
-        let waitCount = 0;
-        let PitchDetector = null;
+        // Load Pitchy library first
+        console.log('Loading Pitchy library...');
+        const pitchyLoaded = await loadPitchy();
         
-        while (!PitchDetector && waitCount < 50) {
-            // Check different possible ways pitchy might be exported
-            PitchDetector = window.Pitchy?.PitchDetector || 
-                           window.PitchDetector || 
-                           window.pitchy?.PitchDetector ||
-                           (window.Pitchy && window.Pitchy.default?.PitchDetector);
+        if (!pitchyLoaded || !PitchDetector) {
+            console.error('Failed to load Pitchy library');
             
-            if (!PitchDetector) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                waitCount++;
+            // Show user-friendly error message
+            if (this.elements.permissionOverlay) {
+                this.elements.permissionOverlay.innerHTML = `
+                    <div class="permission-text" style="color: #ff0000; margin-bottom: 20px;">
+                        Ошибка загрузки библиотеки анализа звука
+                    </div>
+                    <div class="permission-text" style="font-size: 14px; margin-bottom: 30px;">
+                        Пожалуйста, обновите страницу или проверьте подключение к интернету
+                    </div>
+                    <button class="permission-btn" onclick="location.reload()">Обновить страницу</button>
+                `;
+            } else {
+                alert('Ошибка загрузки библиотеки анализа звука (pitchy). Пожалуйста, обновите страницу.');
             }
-        }
-
-        if (!PitchDetector) {
-            console.error('Pitchy is not loaded. Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('pitch')));
-            alert('Ошибка загрузки библиотеки анализа звука (pitchy). Пожалуйста, обновите страницу или проверьте подключение к интернету.');
             return;
         }
 
-        // Store PitchDetector for use
+        // Store PitchDetector reference
         this.PitchDetector = PitchDetector;
-        console.log('Pitchy loaded successfully');
+        console.log('Pitchy PitchDetector loaded and ready');
 
         // Check if microphone access is already granted
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             await this.setupAudio(stream);
-            this.elements.permissionOverlay.classList.add('hidden');
+            if (this.elements.permissionOverlay) {
+                this.elements.permissionOverlay.classList.add('hidden');
+            }
         } catch (err) {
             console.log('Microphone access not granted:', err);
-            // Show permission overlay
+            // Show permission overlay - it's already visible
         }
     }
 
     // Request microphone access
     async requestMicrophoneAccess() {
+        // Check if PitchDetector is available
+        if (!PitchDetector && !this.PitchDetector) {
+            console.error('PitchDetector is not available');
+            // Try to load it again
+            const loaded = await loadPitchy();
+            if (!loaded) {
+                alert('Библиотека анализа звука не загружена. Пожалуйста, обновите страницу.');
+                return;
+            }
+            this.PitchDetector = PitchDetector;
+        }
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             await this.setupAudio(stream);
-            this.elements.permissionOverlay.classList.add('hidden');
+            if (this.elements.permissionOverlay) {
+                this.elements.permissionOverlay.classList.add('hidden');
+            }
         } catch (err) {
             console.error('Error accessing microphone:', err);
-            alert('Не удалось получить доступ к микрофону. Пожалуйста, разрешите доступ в настройках браузера.');
+            const errorMessage = err.name === 'NotAllowedError' 
+                ? 'Доступ к микрофону запрещен. Пожалуйста, разрешите доступ в настройках браузера.'
+                : err.name === 'NotFoundError'
+                ? 'Микрофон не найден. Убедитесь, что микрофон подключен.'
+                : 'Не удалось получить доступ к микрофону: ' + (err.message || err.name);
+            alert(errorMessage);
         }
     }
 
     // Setup audio processing with pitchy
     async setupAudio(stream) {
         try {
+            // Validate PitchDetector is available
+            const PitchDetectorToUse = PitchDetector || this.PitchDetector || window.PitchDetector;
+            
+            if (!PitchDetectorToUse) {
+                throw new Error('PitchDetector не загружен. Пожалуйста, обновите страницу.');
+            }
+
+            if (typeof PitchDetectorToUse.forFloat32Array !== 'function') {
+                throw new Error('PitchDetector.forFloat32Array не доступен. Библиотека pitchy загружена неправильно.');
+            }
+
             // Initialize audio context
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const sampleRate = this.audioContext.sampleRate;
+            
+            if (!sampleRate || isNaN(sampleRate)) {
+                throw new Error('Не удалось получить sample rate из AudioContext');
+            }
+            
             console.log(`AudioContext sample rate: ${sampleRate} Hz`);
 
             // Create microphone source
@@ -130,41 +184,121 @@ class GuitarTuner {
 
             // Create analyser node
             this.analyser = this.audioContext.createAnalyser();
+            if (!this.analyser) {
+                throw new Error('Не удалось создать AnalyserNode');
+            }
+
+            // Set analyser properties
             this.analyser.fftSize = 8192; // Larger FFT for better frequency resolution
             this.analyser.smoothingTimeConstant = 0.3;
             this.microphone.connect(this.analyser);
 
+            // Validate fftSize was set correctly
+            if (!this.analyser.fftSize || this.analyser.fftSize === 0) {
+                throw new Error('Не удалось установить fftSize для analyser');
+            }
+
             // Initialize Pitchy detector
-            console.log('Initializing Pitchy detector...');
-            this.pitchDetector = this.PitchDetector.forFloat32Array(sampleRate);
-            this.audioInput = new Float32Array(this.pitchDetector.inputLength);
-            console.log(`Pitchy detector initialized successfully. Input length: ${this.pitchDetector.inputLength}`);
+            console.log('Initializing Pitchy detector with sample rate:', sampleRate);
+            
+            try {
+                this.pitchDetector = PitchDetectorToUse.forFloat32Array(sampleRate);
+                
+                if (!this.pitchDetector) {
+                    throw new Error('PitchDetector.forFloat32Array вернул null или undefined');
+                }
+
+                if (!this.pitchDetector.inputLength || this.pitchDetector.inputLength === 0) {
+                    throw new Error('pitchDetector.inputLength не определен');
+                }
+
+                this.audioInput = new Float32Array(this.pitchDetector.inputLength);
+                console.log(`Pitchy detector initialized successfully. Input length: ${this.pitchDetector.inputLength}`);
+            } catch (pitchError) {
+                console.error('Error initializing Pitchy detector:', pitchError);
+                throw new Error('Ошибка инициализации детектора высоты тона: ' + pitchError.message);
+            }
 
             // Start tuning process
             this.startTuning();
         } catch (error) {
             console.error('Error setting up audio:', error);
-            alert('Ошибка инициализации анализа звука: ' + error.message);
+            const errorMessage = error.message || 'Неизвестная ошибка инициализации анализа звука';
+            
+            // Show user-friendly error
+            if (this.elements.permissionOverlay) {
+                this.elements.permissionOverlay.innerHTML = `
+                    <div class="permission-text" style="color: #ff0000; margin-bottom: 20px;">
+                        Ошибка инициализации
+                    </div>
+                    <div class="permission-text" style="font-size: 14px; margin-bottom: 30px;">
+                        ${errorMessage}
+                    </div>
+                    <button class="permission-btn" onclick="location.reload()">Обновить страницу</button>
+                `;
+                this.elements.permissionOverlay.classList.remove('hidden');
+            } else {
+                alert('Ошибка инициализации анализа звука: ' + errorMessage);
+            }
         }
     }
 
     // Get pitch using Pitchy (called every 100ms)
     getPitch() {
-        if (!this.analyser || !this.pitchDetector) return;
+        // Validate required components
+        if (!this.analyser) {
+            console.warn('Analyser not initialized');
+            return;
+        }
+
+        if (!this.pitchDetector) {
+            console.warn('PitchDetector not initialized');
+            return;
+        }
+
+        if (!this.audioInput || !this.audioInput.length) {
+            console.warn('AudioInput not initialized');
+            return;
+        }
 
         try {
+            // Validate analyser.fftSize
+            const fftSize = this.analyser.fftSize;
+            if (!fftSize || fftSize === 0) {
+                console.warn('Invalid fftSize:', fftSize);
+                return;
+            }
+
             // Get time domain data
-            const buffer = new Float32Array(this.analyser.fftSize);
+            const buffer = new Float32Array(fftSize);
             this.analyser.getFloatTimeDomainData(buffer);
 
             // Copy required length to audioInput
             const length = Math.min(buffer.length, this.audioInput.length);
+            if (length === 0) {
+                console.warn('Buffer length is 0');
+                return;
+            }
+
             for (let i = 0; i < length; i++) {
                 this.audioInput[i] = buffer[i];
             }
 
             // Detect pitch using Pitchy
+            if (typeof this.pitchDetector.findPitch !== 'function') {
+                console.error('pitchDetector.findPitch is not a function');
+                return;
+            }
+
             const [pitch, clarity] = this.pitchDetector.findPitch(this.audioInput);
+            
+            // Validate pitch and clarity values
+            if (typeof pitch !== 'number' || typeof clarity !== 'number') {
+                console.warn('Invalid pitch or clarity values:', pitch, clarity);
+                this.currentFrequency = null;
+                this.currentNote = null;
+                return;
+            }
             
             // Only use pitch if clarity is above threshold
             if (pitch > 0 && clarity > this.CLARITY_THRESHOLD && pitch >= 50 && pitch <= 400) {
@@ -179,8 +313,9 @@ class GuitarTuner {
             }
         } catch (error) {
             console.error('Error getting pitch:', error);
-            this.currentFrequency = null;
-            this.currentNote = null;
+            // Don't set to null immediately to avoid flickering, but log the error
+            // this.currentFrequency = null;
+            // this.currentNote = null;
         }
     }
 
