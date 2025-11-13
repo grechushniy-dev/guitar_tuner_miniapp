@@ -116,7 +116,7 @@ class GuitarTuner {
         rms = Math.sqrt(rms / this.timeData.length);
 
         // Понизил порог, чтобы легче ловить звук
-        if (rms < 0.002) return null; // было 0.01
+        if (rms < 0.0008) return null; // было 0.01
 
         const buf = this.timeData;
         const size = buf.length;
