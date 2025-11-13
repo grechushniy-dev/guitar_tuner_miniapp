@@ -61,6 +61,26 @@ body {
     opacity: 0.5; /* default when no sound */
 }
 
+/* Анимация при успешной настройке струны */
+@keyframes circle-tuned {
+    0% {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+    }
+    80% {
+        transform: translate(-50%, -50%) scale(1.25);
+        opacity: 0;
+    }
+    100% {
+        transform: translate(-50%, -50%) scale(1.25);
+        opacity: 0;
+    }
+}
+
+.orange-circle.tuned-animation {
+    animation: circle-tuned 0.4s ease-out forwards;
+}
+
 .note-text {
     color: white;
     font-size: 32px;
@@ -105,14 +125,20 @@ body {
     margin-bottom: 30px;
 }
 
-/* Strings */
+/* Strings — выравниваем буквы по центру */
 .string-indicators {
     display: flex;
-    gap: 24px;
+    justify-content: center;
+    align-items: center;
+    column-gap: 18px;
     margin-bottom: 8px;
 }
 
 .string-letter {
+    display: inline-flex;
+    width: 26px;              /* фиксированная ширина */
+    justify-content: center;  /* центрируем символ внутри */
+    text-align: center;
     font-size: 24px;
     font-weight: 600;
     color: #8E8E93;

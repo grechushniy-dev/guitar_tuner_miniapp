@@ -20,7 +20,7 @@ class GuitarTuner {
         // Настройки тюнера
         this.TUNING_TOLERANCE = 15;          // ±15 центов — считаем настроенной
         this.MAX_OFFSET = 50;                // макс. отклонение по UI в центах
-        this.TUNED_CONFIRMATION_TIME = 1500; // 1.5 сек в центре
+        this.TUNED_CONFIRMATION_TIME = 1000; // ✅ 1 секунда в центре
         this.UPDATE_INTERVAL = 80;           // шаг обновления (мс)
 
         // Аудио
@@ -60,11 +60,17 @@ class GuitarTuner {
         this.requestMicrophoneAccess = this.requestMicrophoneAccess.bind(this);
         this.init = this.init.bind(this);
         this.resetTuning = this.resetTuning.bind(this);
+        this.handleCircleAnimationEnd = this.handleCircleAnimationEnd.bind(this);
     }
 
     async init() {
         if (this.elements.resetButton) {
             this.elements.resetButton.addEventListener('click', this.resetTuning);
+        }
+
+        // слушаем окончание анимации круга
+        if (this.elements.orangeCircle) {
+            this.elements.orangeCircle.addEventListener('animationend', this.handleCircleAnimationEnd);
         }
         // Ждём клик по кнопке доступа к микрофону
     }
@@ -116,9 +122,9 @@ class GuitarTuner {
         }
         rms = Math.sqrt(rms / this.timeData.length);
 
-        // МАКСИМАЛЬНАЯ ЧУВСТВИТЕЛЬНОСТЬ
-        // Очень низкий порог "тишины"
-        if (rms < 0.0006) {   // было 0.0008 — сделали ещё более чувствительным
+        // Чуть сниженная чувствительность (по сравнению с "максимальной"):
+        // не ловим совсем уж комнатный шум
+        if (rms < 0.0006) {
             return null;
         }
 
@@ -129,7 +135,7 @@ class GuitarTuner {
         let bestLag = -1;
         let bestCorr = 0;
 
-        // Нормализуем корреляцию, чтобы отсечь совсем шум
+        // Нормализуем корреляцию, чтобы отсечь шум и гармоники
         for (let lag = 8; lag < maxLag; lag++) {
             let corr = 0;
             let normA = 0;
@@ -151,8 +157,8 @@ class GuitarTuner {
             }
         }
 
-        // Порог корреляции тоже занижен (чувствительнее)
-        if (bestLag === -1 || bestCorr < 0.35) {  // было 0.3
+        // Чуть выше порог → меньше ложных срабатываний на первой/второй струне
+        if (bestLag === -1 || bestCorr < 0.35) {
             return null;
         }
 
@@ -225,11 +231,10 @@ class GuitarTuner {
 
         const centered = Math.abs(cents) <= this.TUNING_TOLERANCE;
 
-        // НОВАЯ ЛОГИКА:
-        // считаем струну настроенной ТОЛЬКО если:
+        // считаем струну настроенной, если:
         // 1) круг в центре
         // 2) есть звук
-        // 3) отображается правильная нота для текущей струны
+        // 3) нота совпадает с нужной
         const canConfirm = centered && this.hasSound && isCorrectNote;
 
         if (!this.isTuned && canConfirm) {
@@ -244,6 +249,9 @@ class GuitarTuner {
                     const finalCorrectNote = (finalNote === current.note);
 
                     if (Math.abs(finalCents) <= this.TUNING_TOLERANCE && finalCorrectNote) {
+                        // ✅ Струна окончательно настроена:
+                        // вибрация + анимация круга
+                        this.feedbackOnTuned();
                         this.moveToNextString();
                     } else {
                         this.isTuned = false;
@@ -260,6 +268,30 @@ class GuitarTuner {
                 this.tuningTimeout = null;
             }
         }
+    }
+
+    // Вибрация + запуск анимации круга
+    feedbackOnTuned() {
+        // вибрация, если поддерживается
+        if (window.navigator && window.navigator.vibrate) {
+            window.navigator.vibrate(80);
+        }
+
+        if (this.elements.orangeCircle) {
+            // добавляем класс с CSS-анимацией
+            this.elements.orangeCircle.classList.add('tuned-animation');
+        }
+    }
+
+    // Сброс состояния круга после анимации
+    handleCircleAnimationEnd() {
+        if (!this.elements.orangeCircle) return;
+
+        this.elements.orangeCircle.classList.remove('tuned-animation');
+        // возвращаем в нормальное состояние
+        this.smoothedOffset = 0;
+        this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+        this.elements.orangeCircle.style.opacity = '0.5';
     }
 
     updateUI() {
@@ -374,6 +406,7 @@ class GuitarTuner {
         }
 
         if (this.elements.orangeCircle) {
+            this.elements.orangeCircle.classList.remove('tuned-animation');
             this.elements.orangeCircle.style.opacity = '0.5';
             this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
         }
