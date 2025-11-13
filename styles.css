@@ -36,6 +36,27 @@ body {
     justify-content: center;
 }
 
+/* Progress ring вокруг серого круга */
+.progress-ring {
+    position: absolute;
+    width: 230px;
+    height: 230px;
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: 0.15;
+    /* заполняем сектором в зависимости от var(--tuning-accuracy) */
+    background:
+        conic-gradient(#F76F3F calc(var(--tuning-accuracy, 0) * 360deg),
+                       transparent 0);
+    /* вырезаем центр, чтобы был именно кольцо */
+    -webkit-mask: radial-gradient(farthest-side,
+                    transparent calc(100% - 10px),
+                    #000 calc(100% - 10px));
+    mask: radial-gradient(farthest-side,
+                    transparent calc(100% - 10px),
+                    #000 calc(100% - 10px));
+}
+
 .gray-circle {
     position: absolute;
     width: 200px;
@@ -125,7 +146,7 @@ body {
     margin-bottom: 30px;
 }
 
-/* Strings — выравниваем буквы по центру */
+/* Strings — ровные буквы по центру */
 .string-indicators {
     display: flex;
     justify-content: center;

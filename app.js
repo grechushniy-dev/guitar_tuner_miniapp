@@ -20,7 +20,7 @@ class GuitarTuner {
         // Настройки тюнера
         this.TUNING_TOLERANCE = 15;          // ±15 центов — считаем настроенной
         this.MAX_OFFSET = 50;                // макс. отклонение по UI в центах
-        this.TUNED_CONFIRMATION_TIME = 1000; // ✅ 1 секунда в центре
+        this.TUNED_CONFIRMATION_TIME = 1000; // 1 секунда в центре
         this.UPDATE_INTERVAL = 80;           // шаг обновления (мс)
 
         // Аудио
@@ -49,7 +49,12 @@ class GuitarTuner {
             tunedSubmessage: document.getElementById('tunedSubmessage'),
             orangeCircle: document.getElementById('orangeCircle'),
             noteText: document.getElementById('noteText'),
-            resetButton: document.getElementById('resetButton')
+            resetButton: document.getElementById('resetButton'),
+            progressRing: document.getElementById('progressRing'),
+            tuningContainer: document.querySelector('.tuning-container'),
+            stringIndicators: document.querySelector('.string-indicators'),
+            stringBracket: document.querySelector('.string-bracket'),
+            tuningType: document.querySelector('.tuning-type')
         };
 
         // Ноты
@@ -122,8 +127,8 @@ class GuitarTuner {
         }
         rms = Math.sqrt(rms / this.timeData.length);
 
-        // Чуть сниженная чувствительность (по сравнению с "максимальной"):
-        // не ловим совсем уж комнатный шум
+        // Чуть сниженная чувствительность:
+        // не ловим совсем уж комнатный шум, но струны ловим уверенно
         if (rms < 0.0006) {
             return null;
         }
@@ -157,7 +162,7 @@ class GuitarTuner {
             }
         }
 
-        // Чуть выше порог → меньше ложных срабатываний на первой/второй струне
+        // Порог корреляции — баланс между чувствительностью и стабильностью
         if (bestLag === -1 || bestCorr < 0.35) {
             return null;
         }
@@ -204,6 +209,7 @@ class GuitarTuner {
             this.smoothedOffset += (0 - this.smoothedOffset) * this.smoothingFactor;
             circle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
             this.updateNoteText(null);
+            this.updateProgressRing(0);
 
             this.isTuned = false;
             if (this.tuningTimeout) {
@@ -223,9 +229,10 @@ class GuitarTuner {
         const noteName = this.getNoteName(frequency);
         const isCorrectNote = (noteName === current.note);
 
-        // ДВИЖЕНИЕ КРУГА:
-        // freq < target (cents < 0) → НИЗИТ → нужно тянуть → круг вправо
-        // freq > target (cents > 0) → ПЕРЕТЯНУТА → ослабить → круг влево
+        // progress ring — чем ближе к центру, тем больше дуга
+        this.updateProgressRingFromCents(cents);
+
+        // движение круга
         this.updateCirclePosition(cents);
         this.updateNoteText(frequency);
 
@@ -272,13 +279,12 @@ class GuitarTuner {
 
     // Вибрация + запуск анимации круга
     feedbackOnTuned() {
-        // вибрация, если поддерживается
+        // СИЛЬНЕЕ вибрация: паттерн
         if (window.navigator && window.navigator.vibrate) {
-            window.navigator.vibrate(80);
+            window.navigator.vibrate([120, 80, 120]);
         }
 
         if (this.elements.orangeCircle) {
-            // добавляем класс с CSS-анимацией
             this.elements.orangeCircle.classList.add('tuned-animation');
         }
     }
@@ -288,16 +294,49 @@ class GuitarTuner {
         if (!this.elements.orangeCircle) return;
 
         this.elements.orangeCircle.classList.remove('tuned-animation');
-        // возвращаем в нормальное состояние
-        this.smoothedOffset = 0;
-        this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
-        this.elements.orangeCircle.style.opacity = '0.5';
+        // возвращаем в нормальное состояние,
+        // но круг может быть скрыт, если все струны настроены
+        if (!this.allStringsTuned) {
+            this.smoothedOffset = 0;
+            this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+            this.elements.orangeCircle.style.opacity = '0.5';
+        }
+    }
+
+    // Обновление прогресс-ринга по "точности" (0..1)
+    updateProgressRing(accuracy) {
+        if (!this.elements.progressRing) return;
+        const clamped = Math.max(0, Math.min(1, accuracy));
+        this.elements.progressRing.style.setProperty('--tuning-accuracy', clamped);
+        this.elements.progressRing.style.opacity = clamped > 0.05 ? 1 : 0.15;
+    }
+
+    // Перевод центов в "насколько мы близко к центру"
+    updateProgressRingFromCents(cents) {
+        const absCents = Math.abs(cents);
+        const maxForRing = this.MAX_OFFSET; // за пределами этого прогресс почти 0
+        const accuracy = 1 - Math.min(absCents, maxForRing) / maxForRing;
+        this.updateProgressRing(accuracy);
     }
 
     updateUI() {
         const current = this.STRING_FREQUENCIES[this.currentStringIndex];
 
         if (this.allStringsTuned) {
+            // скрываем индикаторы и круги, чтобы оставить только финальный экран
+            if (this.elements.tuningContainer) {
+                this.elements.tuningContainer.style.display = 'none';
+            }
+            if (this.elements.stringIndicators) {
+                this.elements.stringIndicators.style.display = 'none';
+            }
+            if (this.elements.stringBracket) {
+                this.elements.stringBracket.style.display = 'none';
+            }
+            if (this.elements.tuningType) {
+                this.elements.tuningType.style.display = 'none';
+            }
+
             if (this.elements.instructionText) {
                 this.elements.instructionText.classList.add('hidden');
             }
@@ -313,6 +352,20 @@ class GuitarTuner {
                 this.elements.resetButton.classList.remove('hidden');
             }
             return;
+        }
+
+        // обычный режим — всё показываем
+        if (this.elements.tuningContainer) {
+            this.elements.tuningContainer.style.display = 'flex';
+        }
+        if (this.elements.stringIndicators) {
+            this.elements.stringIndicators.style.display = 'flex';
+        }
+        if (this.elements.stringBracket) {
+            this.elements.stringBracket.style.display = 'block';
+        }
+        if (this.elements.tuningType) {
+            this.elements.tuningType.style.display = 'block';
         }
 
         if (this.elements.instructionText) {
@@ -422,6 +475,21 @@ class GuitarTuner {
         if (this.elements.noteText) {
             this.elements.noteText.style.opacity = 0;
             this.elements.noteText.textContent = '';
+        }
+        this.updateProgressRing(0);
+
+        // вернём обратно визуал, если он был скрыт
+        if (this.elements.tuningContainer) {
+            this.elements.tuningContainer.style.display = 'flex';
+        }
+        if (this.elements.stringIndicators) {
+            this.elements.stringIndicators.style.display = 'flex';
+        }
+        if (this.elements.stringBracket) {
+            this.elements.stringBracket.style.display = 'block';
+        }
+        if (this.elements.tuningType) {
+            this.elements.tuningType.style.display = 'block';
         }
 
         this.updateUI();
