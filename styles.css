@@ -25,7 +25,7 @@ body {
     position: relative;
 }
 
-/* Tuning indicator container */
+/* Tuning indicator */
 .tuning-container {
     position: relative;
     width: 250px;
@@ -36,61 +36,51 @@ body {
     justify-content: center;
 }
 
-/* Gray circle (background/target) */
 .gray-circle {
     position: absolute;
     width: 200px;
     height: 200px;
     border: 8px solid #D1D1D6;
     border-radius: 50%;
-    background: transparent;
 }
 
-/* Orange circle (tuning indicator) */
 .orange-circle {
     position: absolute;
     width: 167px;
     height: 167px;
     background-color: #F76F3F;
-    border: none;
     border-radius: 50%;
     transition: transform 0.1s ease-out, opacity 0.2s ease;
     z-index: 10;
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0.5; /* по умолчанию полупрозрачный, когда нет звука */
+    opacity: 0.5; /* default when no sound */
 }
 
-/* Note text inside orange circle */
 .note-text {
-    color: #FFFFFF;
+    color: white;
     font-size: 32px;
     font-weight: 700;
-    text-align: center;
-    user-select: none;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.2s ease;
 }
 
-/* Instruction text */
 .instruction-text {
     font-size: 24px;
     font-weight: 500;
     color: #F76F3F;
     margin-bottom: 60px;
     text-align: center;
-    min-height: 30px;
 }
 
 .tuned-message {
     font-size: 24px;
-    font-weight: 500;
+    font-weight: 600;
     color: #F76F3F;
     margin-bottom: 10px;
     text-align: center;
@@ -98,7 +88,6 @@ body {
 
 .tuned-submessage {
     font-size: 17px;
-    color: #000;
     text-align: center;
     margin-bottom: 16px;
 }
@@ -106,21 +95,19 @@ body {
 /* Reset button */
 .reset-btn {
     background-color: #F76F3F;
-    color: #FFFFFF;
+    color: white;
     border: none;
     padding: 14px 32px;
     border-radius: 10px;
     font-size: 17px;
     font-weight: 600;
     cursor: pointer;
-    margin-bottom: 40px;
+    margin-bottom: 30px;
 }
 
-/* String indicators */
+/* Strings */
 .string-indicators {
     display: flex;
-    justify-content: center;
-    align-items: center;
     gap: 24px;
     margin-bottom: 8px;
 }
@@ -129,51 +116,47 @@ body {
     font-size: 24px;
     font-weight: 600;
     color: #8E8E93;
-    transition: all 0.3s ease;
+    transition: all 0.3s;
 }
 
 .string-letter.active {
-    color: #000;
-    font-weight: 700;
+    color: black;
     font-size: 28px;
+    font-weight: 700;
 }
 
 .string-letter.highlighted {
     color: #F76F3F;
-    font-weight: 700;
     font-size: 28px;
+    font-weight: 700;
 }
 
-/* Underline bracket */
 .string-bracket {
     width: 300px;
     height: 2px;
     background-color: #F76F3F;
-    margin: 0 auto 8px;
 }
 
-/* Tuning type */
 .tuning-type {
     font-size: 15px;
     color: #F76F3F;
-    text-align: center;
     margin-top: 8px;
 }
 
-/* Microphone permission overlay */
+/* Permission overlay */
 .permission-overlay {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: #F5F0EB;
+    background: #F5F0EB;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     padding: 40px;
-    z-index: 1000;
+    z-index: 100;
 }
 
 .permission-overlay.hidden {
@@ -182,38 +165,27 @@ body {
 
 .permission-text {
     font-size: 18px;
-    color: #000;
-    text-align: center;
     margin-bottom: 30px;
 }
 
 .permission-btn {
     background-color: #F76F3F;
-    color: #FFFFFF;
+    color: white;
     border: none;
     padding: 14px 32px;
     border-radius: 10px;
     font-size: 17px;
     font-weight: 600;
-    cursor: pointer;
 }
 
-/* Home indicator (iOS) */
 .home-indicator {
     width: 134px;
     height: 5px;
-    background-color: #000;
+    background-color: black;
     border-radius: 3px;
     margin: 8px auto;
 }
 
-/* Loading state */
-.loading {
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-/* Hidden class */
 .hidden {
     display: none !important;
 }
