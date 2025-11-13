@@ -19,18 +19,14 @@ class GuitarTuner {
         ];
 
         // Tuning constants
-        this.TUNING_TOLERANCE = 20; // ±20 cents tolerance (more lenient for real-world tuning)
+        this.TUNING_TOLERANCE = 15; // ±15 cents tolerance (reasonable for guitar tuning)
         this.MAX_OFFSET = 50; // Maximum offset in cents for visual display
-        this.TUNED_CONFIRMATION_TIME = 1500; // Time in ms to confirm tuning is stable (increased for reliability)
+        this.TUNED_CONFIRMATION_TIME = 1500; // 1.5s in center to confirm tuning
         this.UPDATE_INTERVAL = 100; // Update every 100ms
         
         // Frequency smoothing for stable detection
         this.smoothedFrequency = null;
         this.frequencySmoothingFactor = 0.3; // How much to trust new frequency readings
-        
-        // Tuning state tracking
-        this.tuningStableCount = 0; // Count consecutive tuned readings
-        this.tuningStableThreshold = 8; // Need 8 consecutive tuned readings (0.8 seconds at 100ms interval)
 
         // State variables
         this.currentStringIndex = 0;
@@ -45,6 +41,7 @@ class GuitarTuner {
         this.smoothingFactor = 0.2; // Smoothing factor (0-1), lower = smoother
         this.currentFrequency = null;
         this.currentNote = null;
+        this.hasSound = false; // есть ли звук сейчас
 
         // Audio processing buffers
         this.timeData = null;
@@ -57,7 +54,8 @@ class GuitarTuner {
             tunedMessage: document.getElementById('tunedMessage'),
             tunedSubmessage: document.getElementById('tunedSubmessage'),
             orangeCircle: document.getElementById('orangeCircle'),
-            noteText: document.getElementById('noteText')
+            noteText: document.getElementById('noteText'),
+            resetButton: document.getElementById('resetButton')
         };
 
         // Musical note names
@@ -71,10 +69,16 @@ class GuitarTuner {
         this.requestMicrophoneAccess = this.requestMicrophoneAccess.bind(this);
         this.init = this.init.bind(this);
         this.cleanup = this.cleanup.bind(this);
+        this.resetTuning = this.resetTuning.bind(this);
     }
 
     // Initialize app
     async init() {
+        // повесим обработчик на кнопку "Tune again", если есть
+        if (this.elements.resetButton) {
+            this.elements.resetButton.addEventListener('click', this.resetTuning);
+        }
+
         // Check if microphone access is already granted
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -372,12 +376,13 @@ class GuitarTuner {
             }
             
             if (frequency && frequency > 0) {
+                this.hasSound = true; // есть звук
+
                 // Smooth frequency readings for more stable tuning
                 if (this.smoothedFrequency === null) {
                     this.smoothedFrequency = frequency;
                 } else {
                     // Only smooth if new frequency is reasonably close to smoothed value
-                    // This prevents sudden jumps from affecting the smoothed value too much
                     const frequencyDiff = Math.abs(frequency - this.smoothedFrequency);
                     const maxDiff = this.smoothedFrequency * 0.1; // 10% tolerance
                     
@@ -399,6 +404,8 @@ class GuitarTuner {
                 // Update UI with smoothed frequency
                 this.updateTuning(this.smoothedFrequency);
             } else {
+                this.hasSound = false; // звука нет
+
                 // No frequency detected - reset smoothed frequency after a delay
                 if (this.smoothedFrequency !== null) {
                     // Gradually reset smoothed frequency
@@ -414,6 +421,11 @@ class GuitarTuner {
     // Update tuning based on detected frequency
     updateTuning(frequency) {
         if (!frequency || frequency <= 0) {
+            // Нет частоты → нет звука
+            if (this.elements.orangeCircle) {
+                this.elements.orangeCircle.style.opacity = '0.5'; // полупрозрачный без звука
+            }
+
             // No frequency detected, smoothly return circle to center
             this.smoothedOffset = this.smoothedOffset + (0 - this.smoothedOffset) * this.smoothingFactor;
             this.elements.orangeCircle.style.transition = 'none';
@@ -428,25 +440,22 @@ class GuitarTuner {
             return;
         }
 
+        // Есть частота → есть звук
+        if (this.elements.orangeCircle) {
+            this.elements.orangeCircle.style.opacity = '1'; // 100% при звуке
+        }
+
         const currentString = this.STRING_FREQUENCIES[this.currentStringIndex];
         const cents = this.frequencyToCents(frequency, currentString.frequency);
         
-        // Determine tuning state
-        const isSharp = cents > 0; // Positive cents = sharp (перетянута)
-        const isFlat = cents < 0;  // Negative cents = flat (недотянута)
+        // Log detailed tuning info for debugging
         const isWithinTolerance = Math.abs(cents) <= this.TUNING_TOLERANCE;
-        
-        // Log detailed tuning info for debugging (only log significant changes)
         if (isWithinTolerance) {
-            // Only log when stable count changes significantly
-            if (this.tuningStableCount % 5 === 0 || this.tuningStableCount === this.tuningStableThreshold) {
-                console.log(`✓ String ${currentString.stringNumber} (${currentString.note}) tuned! Freq: ${frequency.toFixed(2)} Hz, Target: ${currentString.frequency.toFixed(2)} Hz, Cents: ${cents.toFixed(2)}, Stable: ${this.tuningStableCount}/${this.tuningStableThreshold}`);
-            }
+            console.log(`✓ String ${currentString.stringNumber} (${currentString.note}) tuned! Detected: ${frequency.toFixed(2)} Hz, Target: ${currentString.frequency.toFixed(2)} Hz, Cents: ${cents.toFixed(2)}, Tolerance: ±${this.TUNING_TOLERANCE}`);
         } else {
-            // Log tuning direction for debugging
-            const direction = isSharp ? 'SHARP (перетянута → нужно ослабить)' : 'FLAT (недотянута → нужно затянуть)';
-            if (Math.abs(cents) > 5) { // Only log significant deviations
-                console.log(`→ ${direction} | Freq: ${frequency.toFixed(2)} Hz, Target: ${currentString.frequency.toFixed(2)} Hz, Cents: ${cents.toFixed(2)} (tolerance: ±${this.TUNING_TOLERANCE})`);
+            // Log when close but not quite there
+            if (Math.abs(cents) <= this.TUNING_TOLERANCE * 2) {
+                console.log(`→ Close! Detected: ${frequency.toFixed(2)} Hz, Target: ${currentString.frequency.toFixed(2)} Hz, Cents: ${cents.toFixed(2)} (need ±${this.TUNING_TOLERANCE})`);
             }
         }
         
@@ -456,67 +465,41 @@ class GuitarTuner {
         // Update note text
         this.updateNoteText(frequency);
         
-        // Check if tuned
-        const isTuned = this.checkIfTuned(cents);
+        // Check if tuned: в центре И есть звук
+        const isTuned = this.checkIfTuned(cents) && this.hasSound;
         
-        // Track stable tuning state using consecutive readings
-        if (isTuned) {
-            this.tuningStableCount++;
+        if (!this.isTuned && isTuned) {
+            // Just entered tuned state
+            this.isTuned = true;
+            console.log(`String ${currentString.stringNumber} (${currentString.note}) is now tuned!`);
             
-            // Check if we've been tuned long enough to move to next string
-            if (this.tuningStableCount >= this.tuningStableThreshold) {
-                // We've been stable long enough - check if we need to initiate transition
-                if (!this.isTuned) {
-                    // Just reached stable tuned state for the first time
-                    this.isTuned = true;
-                    console.log(`✓✓ String ${currentString.stringNumber} (${currentString.note}) is STABLE and tuned! Stable count: ${this.tuningStableCount}/${this.tuningStableThreshold}, Cents: ${cents.toFixed(2)}`);
-                    
-                    // Clear any existing timeout
-                    if (this.tuningTimeout) {
-                        clearTimeout(this.tuningTimeout);
+            if (this.tuningTimeout) {
+                clearTimeout(this.tuningTimeout);
+            }
+            
+            // Start confirmation timer (1.5s)
+            this.tuningTimeout = setTimeout(() => {
+                // Double-check that we're still tuned and есть звук
+                if (this.isTuned && !this.allStringsTuned && this.currentFrequency && this.hasSound) {
+                    const finalCents = this.frequencyToCents(this.currentFrequency, currentString.frequency);
+                    if (Math.abs(finalCents) <= this.TUNING_TOLERANCE) {
+                        console.log(`✓ Confirmed: Moving to next string`);
+                        this.moveToNextString();
+                    } else {
+                        console.log(`⚠ Tuning lost during confirmation, staying on current string`);
+                        this.isTuned = false;
                     }
-                    
-                    // Add a short delay before moving to next string for visual feedback
-                    this.tuningTimeout = setTimeout(() => {
-                        // Final verification before moving
-                        if (!this.allStringsTuned && this.currentFrequency) {
-                            const finalCents = this.frequencyToCents(this.currentFrequency, currentString.frequency);
-                            if (Math.abs(finalCents) <= this.TUNING_TOLERANCE) {
-                                console.log(`✓✓✓ CONFIRMED: Moving to next string! Final cents: ${finalCents.toFixed(2)}, Target: ${currentString.frequency.toFixed(2)} Hz`);
-                                this.moveToNextString();
-                            } else {
-                                console.log(`⚠ Verification failed: Final cents ${finalCents.toFixed(2)} is outside tolerance ±${this.TUNING_TOLERANCE}`);
-                                this.isTuned = false;
-                                this.tuningStableCount = Math.floor(this.tuningStableThreshold * 0.5); // Reset to halfway
-                            }
-                        } else if (this.allStringsTuned) {
-                            console.log(`All strings already tuned, not moving`);
-                        } else {
-                            console.log(`⚠ No frequency available for verification`);
-                            this.isTuned = false;
-                            this.tuningStableCount = Math.floor(this.tuningStableThreshold * 0.5);
-                        }
-                        this.tuningTimeout = null;
-                    }, 300); // 300ms delay for visual feedback
                 }
-                // If already marked as tuned, keep counting but don't reset
+                this.tuningTimeout = null;
+            }, this.TUNED_CONFIRMATION_TIME);
+        } else if (this.isTuned && !isTuned) {
+            // Left tuned state
+            console.log(`⚠ String ${currentString.stringNumber} (${currentString.note}) is no longer tuned. Cents: ${cents.toFixed(2)}`);
+            if (this.tuningTimeout) {
+                clearTimeout(this.tuningTimeout);
+                this.tuningTimeout = null;
             }
-        } else {
-            // Not tuned - reset stable count and state
-            if (this.tuningStableCount > 0) {
-                console.log(`⚠ Tuning lost: Cents ${cents.toFixed(2)} is outside tolerance ±${this.TUNING_TOLERANCE}. Resetting stable count from ${this.tuningStableCount}.`);
-            }
-            this.tuningStableCount = 0;
-            
-            if (this.isTuned) {
-                // Left tuned state
-                console.log(`⚠ String ${currentString.stringNumber} (${currentString.note}) is no longer tuned. Cents: ${cents.toFixed(2)}`);
-                if (this.tuningTimeout) {
-                    clearTimeout(this.tuningTimeout);
-                    this.tuningTimeout = null;
-                }
-                this.isTuned = false;
-            }
+            this.isTuned = false;
         }
     }
 
@@ -525,41 +508,66 @@ class GuitarTuner {
         const currentString = this.STRING_FREQUENCIES[this.currentStringIndex];
         
         if (this.allStringsTuned) {
-            this.elements.instructionText.classList.add('hidden');
-            this.elements.tunedMessage.classList.remove('hidden');
-            this.elements.tunedSubmessage.classList.remove('hidden');
+            if (this.elements.instructionText) {
+                this.elements.instructionText.classList.add('hidden');
+            }
+            if (this.elements.tunedMessage) {
+                this.elements.tunedMessage.textContent = "Let's Play";
+                this.elements.tunedMessage.classList.remove('hidden');
+            }
+            if (this.elements.tunedSubmessage) {
+                this.elements.tunedSubmessage.textContent = "All strings are tuned.";
+                this.elements.tunedSubmessage.classList.remove('hidden');
+            }
             if (this.elements.noteText) {
                 this.elements.noteText.textContent = '';
                 this.elements.noteText.style.opacity = '0';
             }
+            if (this.elements.resetButton) {
+                this.elements.resetButton.classList.remove('hidden');
+            }
+            // Круг в центре и полупрозрачный
+            if (this.elements.orangeCircle) {
+                this.smoothedOffset = 0;
+                this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+                this.elements.orangeCircle.style.opacity = '0.5';
+            }
             return;
         }
 
-        this.elements.instructionText.textContent = `Pull ${currentString.label} string`;
-        this.elements.instructionText.classList.remove('hidden');
-        this.elements.tunedMessage.classList.add('hidden');
-        this.elements.tunedSubmessage.classList.add('hidden');
+        if (this.elements.instructionText) {
+            this.elements.instructionText.textContent = `Pull ${currentString.label} string`;
+            this.elements.instructionText.classList.remove('hidden');
+        }
+        if (this.elements.tunedMessage) {
+            this.elements.tunedMessage.classList.add('hidden');
+        }
+        if (this.elements.tunedSubmessage) {
+            this.elements.tunedSubmessage.classList.add('hidden');
+        }
+        if (this.elements.resetButton) {
+            this.elements.resetButton.classList.add('hidden');
+        }
 
         // Reset smoothed offset and hide note text when switching strings
         this.smoothedOffset = 0;
         this.smoothedFrequency = null; // Reset frequency smoothing for new string
-        this.tuningStableCount = 0; // Reset stable count for new string
-        this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)'; // Reset to center
+
+        if (this.elements.orangeCircle) {
+            this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)'; // Reset to center
+            this.elements.orangeCircle.style.opacity = '0.5'; // по умолчанию полупрозрачный
+        }
+
         if (this.elements.noteText) {
             this.elements.noteText.textContent = '';
             this.elements.noteText.style.opacity = '0';
-        }
-        
-        // Clear any pending timeouts
-        if (this.tuningTimeout) {
-            clearTimeout(this.tuningTimeout);
-            this.tuningTimeout = null;
         }
 
         // Update string indicators
         // Tuned strings = orange (highlighted), current string = black (active), future strings = gray (default)
         this.STRING_FREQUENCIES.forEach((str, index) => {
             const element = document.querySelector(`[data-string="${index}"]`);
+            if (!element) return;
             if (index < this.currentStringIndex) {
                 // Already tuned strings - orange
                 element.classList.remove('active');
@@ -597,7 +605,7 @@ class GuitarTuner {
         const semitonesFromC0 = roundedSemitones + 57; // 57 = A4's position (9 + 4*12)
         
         // Calculate octave and note index
-        const octave = Math.floor(semitonesFromC0 / 12);
+        const octave = Math.floor(semititonesFromC0 / 12);
         let noteIndex = semitonesFromC0 % 12;
         
         // Handle negative modulo
@@ -628,12 +636,6 @@ class GuitarTuner {
             // Show note name without octave for cleaner display
             this.elements.noteText.textContent = note.name;
             this.elements.noteText.style.opacity = '1';
-            
-            // Optional: Highlight if it matches the expected note for current string
-            const currentString = this.STRING_FREQUENCIES[this.currentStringIndex];
-            if (note.name === currentString.note) {
-                // Correct note detected - could add visual feedback here if needed
-            }
         } else {
             this.elements.noteText.textContent = '';
             this.elements.noteText.style.opacity = '0';
@@ -642,53 +644,25 @@ class GuitarTuner {
 
     // Update orange circle position based on tuning accuracy with smoothing
     updateCirclePosition(cents) {
-        // Calculate maximum pixel offset based on circle sizes
         // Gray circle: 200px, Orange circle: 167px
         // Available space for movement: (200 - 167) / 2 = 16.5px on each side
-        const maxOffset = 16; // Maximum pixel offset (slightly less than available space)
+        const maxOffset = 16; // Maximum pixel offset
         
-        // Calculate target position based on cents
-        // IMPORTANT: Positive cents = sharp (перетянута) = move RIGHT (+)
-        //            Negative cents = flat (недотянута) = move LEFT (-)
-        
-        let targetOffset = 0;
-        
+        // If within tuning tolerance, force circle to center with stronger smoothing
         if (Math.abs(cents) <= this.TUNING_TOLERANCE) {
-            // Within tolerance - center the circle
-            targetOffset = 0;
-            // Use faster smoothing to center quickly
-            const centerSmoothingFactor = 0.5;
+            const targetOffset = 0;
+            const centerSmoothingFactor = 0.4;
             this.smoothedOffset = this.smoothedOffset + (targetOffset - this.smoothedOffset) * centerSmoothingFactor;
             
-            // Snap to center if very close
-            if (Math.abs(this.smoothedOffset) < 0.3) {
+            if (Math.abs(this.smoothedOffset) < 0.5) {
                 this.smoothedOffset = 0;
             }
         } else {
-            // Outside tolerance - move circle left or right
-            // Clamp cents to maximum offset for display
             const clampedCents = Math.max(-this.MAX_OFFSET, Math.min(this.MAX_OFFSET, cents));
-            
-            // Map cents to pixel offset
-            // Positive cents (sharp) -> positive offset (right)
-            // Negative cents (flat) -> negative offset (left)
-            targetOffset = (clampedCents / this.MAX_OFFSET) * maxOffset;
-            
-            // Use more responsive smoothing for out-of-tune detection
-            // This makes the circle move faster when tuning is off
-            // Increase responsiveness based on how far off we are
-            const deviationRatio = Math.abs(cents) / this.MAX_OFFSET;
-            const responsiveSmoothingFactor = Math.min(0.5, 0.25 + deviationRatio * 0.25); // More responsive for larger deviations
-            this.smoothedOffset = this.smoothedOffset + (targetOffset - this.smoothedOffset) * responsiveSmoothingFactor;
-            
-            // Debug: Log movement direction and amount
-            const direction = cents > 0 ? 'RIGHT (sharp)' : 'LEFT (flat)';
-            if (Math.abs(cents) > 3) { // Log for any noticeable deviation
-                console.log(`Circle: ${direction} | Cents=${cents.toFixed(2)}, Offset=${this.smoothedOffset.toFixed(2)}px`);
-            }
+            const targetOffset = (clampedCents / this.MAX_OFFSET) * maxOffset;
+            this.smoothedOffset = this.smoothedOffset + (targetOffset - this.smoothedOffset) * this.smoothingFactor;
         }
         
-        // Apply transform
         this.elements.orangeCircle.style.transition = 'none';
         this.elements.orangeCircle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
     }
@@ -700,7 +674,6 @@ class GuitarTuner {
 
     // Move to next string
     moveToNextString() {
-        // Clear any pending tuning timeout
         if (this.tuningTimeout) {
             clearTimeout(this.tuningTimeout);
             this.tuningTimeout = null;
@@ -709,18 +682,70 @@ class GuitarTuner {
         if (this.currentStringIndex < this.STRING_FREQUENCIES.length - 1) {
             this.currentStringIndex++;
             this.updateUI();
-            // Reset smoothed offset to center smoothly
             this.smoothedOffset = 0;
-            this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+            if (this.elements.orangeCircle) {
+                this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+                this.elements.orangeCircle.style.opacity = '0.5';
+            }
             this.isTuned = false;
         } else {
             // All strings tuned
             this.allStringsTuned = true;
             this.updateUI();
             this.smoothedOffset = 0;
-            this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+            if (this.elements.orangeCircle) {
+                this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+                this.elements.orangeCircle.style.opacity = '0.5';
+            }
             this.isTuned = false;
         }
+    }
+
+    // Сбросить настройку и начать заново
+    resetTuning() {
+        this.currentStringIndex = 0;
+        this.allStringsTuned = false;
+        this.isTuned = false;
+        this.smoothedFrequency = null;
+        this.currentFrequency = null;
+        this.currentNote = null;
+        this.smoothedOffset = 0;
+        this.hasSound = false;
+
+        if (this.tuningTimeout) {
+            clearTimeout(this.tuningTimeout);
+            this.tuningTimeout = null;
+        }
+
+        // Сбрасываем индикаторы струн
+        this.STRING_FREQUENCIES.forEach((str, index) => {
+            const element = document.querySelector(`[data-string="${index}"]`);
+            if (!element) return;
+            element.classList.remove('highlighted', 'active');
+        });
+
+        // Круг в центр и полупрозрачный
+        if (this.elements.orangeCircle) {
+            this.elements.orangeCircle.style.transform = 'translate(-50%, -50%)';
+            this.elements.orangeCircle.style.opacity = '0.5';
+        }
+
+        if (this.elements.tunedMessage) {
+            this.elements.tunedMessage.classList.add('hidden');
+        }
+        if (this.elements.tunedSubmessage) {
+            this.elements.tunedSubmessage.classList.add('hidden');
+        }
+        if (this.elements.resetButton) {
+            this.elements.resetButton.classList.add('hidden');
+        }
+
+        if (this.elements.noteText) {
+            this.elements.noteText.textContent = '';
+            this.elements.noteText.style.opacity = '0';
+        }
+
+        this.updateUI();
     }
 
     // Cleanup resources

@@ -54,7 +54,7 @@ body {
     background-color: #F76F3F;
     border: none;
     border-radius: 50%;
-    transition: transform 0.1s ease-out;
+    transition: transform 0.1s ease-out, opacity 0.2s ease;
     z-index: 10;
     left: 50%;
     top: 50%;
@@ -63,6 +63,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    opacity: 0.5; /* по умолчанию полупрозрачный, когда нет звука */
 }
 
 /* Note text inside orange circle */
@@ -99,6 +100,19 @@ body {
     font-size: 17px;
     color: #000;
     text-align: center;
+    margin-bottom: 16px;
+}
+
+/* Reset button */
+.reset-btn {
+    background-color: #F76F3F;
+    color: #FFFFFF;
+    border: none;
+    padding: 14px 32px;
+    border-radius: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
     margin-bottom: 40px;
 }
 
@@ -203,4 +217,3 @@ body {
 .hidden {
     display: none !important;
 }
-
