@@ -7,7 +7,7 @@ class GuitarTuner {
             this.tg.expand();
         }
 
-        // Струны гитары (стандартный строй)
+        // Стандартный строй гитары
         this.STRING_FREQUENCIES = [
             { note: 'E', frequency: 82.41, label: 'sixth' },
             { note: 'A', frequency: 110.00, label: 'fifth' },
@@ -17,11 +17,11 @@ class GuitarTuner {
             { note: 'E', frequency: 329.63, label: 'first' }
         ];
 
-        // Константы
-        this.TUNING_TOLERANCE = 15;          // ±15 центов — считаем в центре
-        this.MAX_OFFSET = 50;                // макс. отклонение по UI
+        // Настройки тюнера
+        this.TUNING_TOLERANCE = 15;          // ±15 центов — считаем настроенной
+        this.MAX_OFFSET = 50;                // макс. отклонение по UI в центах
         this.TUNED_CONFIRMATION_TIME = 1500; // 1.5 сек в центре
-        this.UPDATE_INTERVAL = 100;          // 100 мс обновление
+        this.UPDATE_INTERVAL = 80;           // шаг обновления (мс)
 
         // Аудио
         this.audioContext = null;
@@ -34,9 +34,9 @@ class GuitarTuner {
         this.isTuned = false;
         this.allStringsTuned = false;
         this.smoothedOffset = 0;
-        this.smoothingFactor = 0.2;
+        this.smoothingFactor = 0.25;
         this.smoothedFrequency = null;
-        this.frequencySmoothingFactor = 0.3;
+        this.frequencySmoothingFactor = 0.35;
         this.hasSound = false;
         this.tuningTimeout = null;
         this.updateIntervalId = null;
@@ -66,7 +66,7 @@ class GuitarTuner {
         if (this.elements.resetButton) {
             this.elements.resetButton.addEventListener('click', this.resetTuning);
         }
-        // НИЧЕГО не запрашиваем автоматически — ждём клик по кнопке в оверлее
+        // Ждём клик по кнопке доступа к микрофону
     }
 
     async requestMicrophoneAccess() {
@@ -102,40 +102,59 @@ class GuitarTuner {
         this.startTuning();
     }
 
-    // Автокорреляция во временной области
+    // Автокорреляция: ищем период → частота
     detectPitch() {
         if (!this.analyser || !this.timeData) return null;
 
         this.analyser.getFloatTimeDomainData(this.timeData);
 
-        // Громкость (RMS)
+        // RMS — громкость сигнала
         let rms = 0;
         for (let i = 0; i < this.timeData.length; i++) {
-            rms += this.timeData[i] * this.timeData[i];
+            const v = this.timeData[i];
+            rms += v * v;
         }
         rms = Math.sqrt(rms / this.timeData.length);
 
-        // Понизил порог, чтобы легче ловить звук
-        if (rms < 0.0008) return null; // было 0.01
+        // МАКСИМАЛЬНАЯ ЧУВСТВИТЕЛЬНОСТЬ
+        // Очень низкий порог "тишины"
+        if (rms < 0.0003) {   // было 0.0008 — сделали ещё более чувствительным
+            return null;
+        }
 
         const buf = this.timeData;
         const size = buf.length;
-        let bestLag = -1;
-        let bestCorr = 0;
         const maxLag = size / 2;
 
+        let bestLag = -1;
+        let bestCorr = 0;
+
+        // Нормализуем корреляцию, чтобы отсечь совсем шум
         for (let lag = 8; lag < maxLag; lag++) {
             let corr = 0;
+            let normA = 0;
+            let normB = 0;
             for (let i = 0; i < size - lag; i++) {
-                corr += buf[i] * buf[i + lag];
+                const a = buf[i];
+                const b = buf[i + lag];
+                corr += a * b;
+                normA += a * a;
+                normB += b * b;
             }
-            if (corr > bestCorr) {
-                bestCorr = corr;
+
+            const denom = Math.sqrt(normA * normB) || 1e-9;
+            const normalized = corr / denom;
+
+            if (normalized > bestCorr) {
+                bestCorr = normalized;
                 bestLag = lag;
             }
         }
 
-        if (bestLag === -1 || bestCorr <= 0) return null;
+        // Порог корреляции тоже занижен (чувствительнее)
+        if (bestLag === -1 || bestCorr < 0.2) {  // было 0.3
+            return null;
+        }
 
         const freq = this.audioContext.sampleRate / bestLag;
         if (freq < 50 || freq > 400) return null;
@@ -156,7 +175,8 @@ class GuitarTuner {
                     this.smoothedFrequency = freq;
                 } else {
                     this.smoothedFrequency =
-                        this.smoothedFrequency + (freq - this.smoothedFrequency) * this.frequencySmoothingFactor;
+                        this.smoothedFrequency +
+                        (freq - this.smoothedFrequency) * this.frequencySmoothingFactor;
                 }
 
                 this.updateTuning(this.smoothedFrequency);
@@ -173,7 +193,7 @@ class GuitarTuner {
         if (!circle) return;
 
         if (!frequency) {
-            // НЕТ ЗВУКА → круг полупрозрачный и в центр
+            // нет звука → круг бледный и возвращается в центр
             circle.style.opacity = '0.5';
             this.smoothedOffset += (0 - this.smoothedOffset) * this.smoothingFactor;
             circle.style.transform = `translate(calc(-50% + ${this.smoothedOffset}px), -50%)`;
@@ -187,19 +207,30 @@ class GuitarTuner {
             return;
         }
 
-        // ЕСТЬ ЗВУК → круг непрозрачный
+        // есть звук → круг полностью видимый
         circle.style.opacity = '1';
 
         const current = this.STRING_FREQUENCIES[this.currentStringIndex];
         const cents = this.frequencyToCents(frequency, current.frequency);
 
-        // ⬅/➡ логика: cents > 0 → частота выше цели → струна перетянута → круг влево
-        // cents < 0 → низит → круг вправо
+        // определяем ноту
+        const noteName = this.getNoteName(frequency);
+        const isCorrectNote = (noteName === current.note);
+
+        // ДВИЖЕНИЕ КРУГА:
+        // freq < target (cents < 0) → НИЗИТ → нужно тянуть → круг вправо
+        // freq > target (cents > 0) → ПЕРЕТЯНУТА → ослабить → круг влево
         this.updateCirclePosition(cents);
         this.updateNoteText(frequency);
 
         const centered = Math.abs(cents) <= this.TUNING_TOLERANCE;
-        const canConfirm = centered && this.hasSound;
+
+        // НОВАЯ ЛОГИКА:
+        // считаем струну настроенной ТОЛЬКО если:
+        // 1) круг в центре
+        // 2) есть звук
+        // 3) отображается правильная нота для текущей струны
+        const canConfirm = centered && this.hasSound && isCorrectNote;
 
         if (!this.isTuned && canConfirm) {
             this.isTuned = true;
@@ -207,12 +238,12 @@ class GuitarTuner {
 
             this.tuningTimeout = setTimeout(() => {
                 if (this.isTuned && this.hasSound) {
-                    // Ещё раз проверим
-                    const finalCents = this.frequencyToCents(
-                        this.smoothedFrequency || frequency,
-                        current.frequency
-                    );
-                    if (Math.abs(finalCents) <= this.TUNING_TOLERANCE) {
+                    const finalFreq = this.smoothedFrequency || frequency;
+                    const finalCents = this.frequencyToCents(finalFreq, current.frequency);
+                    const finalNote = this.getNoteName(finalFreq);
+                    const finalCorrectNote = (finalNote === current.note);
+
+                    if (Math.abs(finalCents) <= this.TUNING_TOLERANCE && finalCorrectNote) {
                         this.moveToNextString();
                     } else {
                         this.isTuned = false;
@@ -266,7 +297,7 @@ class GuitarTuner {
             this.elements.resetButton.classList.add('hidden');
         }
 
-        // Обновляем индикаторы струн
+        // индикаторы струн
         const letters = document.querySelectorAll('.string-letter');
         letters.forEach((el, i) => {
             el.classList.toggle('active', i === this.currentStringIndex);
@@ -296,7 +327,7 @@ class GuitarTuner {
     getNoteName(freq) {
         const semitones = 12 * Math.log2(freq / this.A4);
         const rounded = Math.round(semitones);
-        const index = (rounded + 9 + 12 * 4) % 12; // сдвиг от A4
+        const index = (rounded + 9 + 12 * 4) % 12; // смещение от A4
         return this.NOTE_NAMES[index];
     }
 
@@ -306,7 +337,11 @@ class GuitarTuner {
 
         const maxPx = 16;
         const clamped = Math.max(-this.MAX_OFFSET, Math.min(this.MAX_OFFSET, cents));
-        const targetOffset = (clamped / this.MAX_OFFSET) * maxPx;
+
+        // Знак инвертирован:
+        // cents < 0 (низит) → offset > 0 → вправо
+        // cents > 0 (перетянута) → offset < 0 → влево
+        const targetOffset = (-clamped / this.MAX_OFFSET) * maxPx;
 
         this.smoothedOffset += (targetOffset - this.smoothedOffset) * this.smoothingFactor;
 
@@ -366,6 +401,6 @@ window.addEventListener('load', () => {
     tuner = new GuitarTuner();
     tuner.init();
 
-    // ВАЖНО: биндим контекст, чтобы this внутри работал правильно
+    // Чтобы кнопка в HTML работала
     window.requestMicrophoneAccess = tuner.requestMicrophoneAccess.bind(tuner);
 });
